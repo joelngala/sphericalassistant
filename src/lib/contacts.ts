@@ -45,6 +45,50 @@ export async function lookupContactByEmail(
   }
 }
 
+export async function searchContacts(
+  accessToken: string,
+  query: string,
+  pageSize: number = 8
+): Promise<ClientContact[]> {
+  const trimmedQuery = query.trim();
+  if (!trimmedQuery) return [];
+
+  const params = new URLSearchParams({
+    query: trimmedQuery,
+    readMask: 'names,emailAddresses,phoneNumbers,addresses,organizations,photos,biographies',
+    pageSize: String(pageSize),
+  });
+
+  const data = await peopleFetch<{ results?: Array<{ person: Record<string, unknown> }> }>(
+    accessToken,
+    `${PEOPLE_BASE}/people:searchContacts?${params}`
+  );
+
+  return (data.results || [])
+    .map((result) => extractContact(result.person as Record<string, unknown>))
+    .filter((contact) => Boolean(contact.email));
+}
+
+export async function listContacts(
+  accessToken: string,
+  pageSize: number = 12
+): Promise<ClientContact[]> {
+  const params = new URLSearchParams({
+    personFields: 'names,emailAddresses,phoneNumbers,addresses,organizations,photos,biographies',
+    pageSize: String(pageSize),
+    sortOrder: 'LAST_MODIFIED_DESCENDING',
+  });
+
+  const data = await peopleFetch<{ connections?: Array<Record<string, unknown>> }>(
+    accessToken,
+    `${PEOPLE_BASE}/people/me/connections?${params}`
+  );
+
+  return (data.connections || [])
+    .map((person) => extractContact(person))
+    .filter((contact) => Boolean(contact.email));
+}
+
 export async function createContact(
   accessToken: string,
   contact: { name: string; email: string; phone?: string; address?: string }

@@ -1,4 +1,11 @@
-import type { CalendarEvent, WorkflowState } from '../types.ts';
+import type {
+  AppointmentFormData,
+  AssistantReminderData,
+  CalendarAttendee,
+  CalendarEvent,
+  WorkflowState,
+} from '../types.ts';
+import type { LinkedDocument } from './docs.ts';
 
 const CALENDAR_BASE = 'https://www.googleapis.com/calendar/v3';
 
@@ -43,6 +50,72 @@ export async function fetchUpcomingEvents(
   return data.items || [];
 }
 
+export async function createAssistantReminderEvent(
+  accessToken: string,
+  reminder: AssistantReminderData,
+  startAt: Date
+): Promise<CalendarEvent> {
+  const endAt = new Date(startAt.getTime() + 30 * 60 * 1000);
+
+  return calendarFetch<CalendarEvent>(accessToken, '/calendars/primary/events', {
+    method: 'POST',
+    body: JSON.stringify({
+      summary: `[Spherical] ${reminder.title}`,
+      description: reminder.detail,
+      start: { dateTime: startAt.toISOString() },
+      end: { dateTime: endAt.toISOString() },
+      transparency: 'transparent',
+      reminders: {
+        useDefault: false,
+        overrides: [
+          { method: 'popup', minutes: 10 },
+          { method: 'email', minutes: 60 },
+        ],
+      },
+      extendedProperties: {
+        private: {
+          sphericalAssistantReminder: JSON.stringify(reminder),
+        },
+      },
+    }),
+  });
+}
+
+export async function createCalendarEvent(
+  accessToken: string,
+  form: AppointmentFormData
+): Promise<CalendarEvent> {
+  const summaryParts = [form.title.trim()];
+  if (form.clientName.trim()) {
+    summaryParts.push(form.clientName.trim());
+  }
+
+  const startDateTime = buildLocalDateTime(form.date, form.startTime);
+  const endDateTime = buildLocalDateTime(form.date, form.endTime);
+
+  const body: Record<string, unknown> = {
+    summary: summaryParts.join(' - '),
+    description: form.notes.trim() || undefined,
+    location: form.location.trim() || undefined,
+    start: { dateTime: startDateTime },
+    end: { dateTime: endDateTime },
+  };
+
+  if (form.clientEmail.trim()) {
+    body.attendees = [
+      {
+        email: form.clientEmail.trim(),
+        ...(form.clientName.trim() ? { displayName: form.clientName.trim() } : {}),
+      },
+    ];
+  }
+
+  return calendarFetch<CalendarEvent>(accessToken, '/calendars/primary/events', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
 export function getWorkflowState(event: CalendarEvent): WorkflowState {
   const raw = event.extendedProperties?.private?.sphericalAssistant;
   if (!raw) return { status: 'new' };
@@ -52,6 +125,21 @@ export function getWorkflowState(event: CalendarEvent): WorkflowState {
   } catch {
     return { status: 'new' };
   }
+}
+
+export function getAssistantReminder(event: CalendarEvent): AssistantReminderData | null {
+  const raw = event.extendedProperties?.private?.sphericalAssistantReminder;
+  if (!raw) return null;
+
+  try {
+    return JSON.parse(raw) as AssistantReminderData;
+  } catch {
+    return null;
+  }
+}
+
+export function isAssistantReminderEvent(event: CalendarEvent): boolean {
+  return getAssistantReminder(event) !== null || event.summary.startsWith('[Spherical]');
 }
 
 export async function updateEventWorkflow(
@@ -71,6 +159,20 @@ export async function updateEventWorkflow(
   });
 }
 
+export async function updateEventAttendee(
+  accessToken: string,
+  event: CalendarEvent,
+  email: string,
+  displayName?: string
+): Promise<CalendarEvent> {
+  const attendees = upsertClientAttendee(event.attendees || [], email, displayName);
+
+  return calendarFetch<CalendarEvent>(accessToken, `/calendars/primary/events/${event.id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ attendees }),
+  });
+}
+
 export function parseServiceType(summary: string): string {
   const parts = summary.split(/[-–—]/);
   return parts[0].trim() || summary.trim();
@@ -85,6 +187,36 @@ export function getAttendeeEmails(event: CalendarEvent): string[] {
   return (event.attendees || [])
     .filter((a) => !a.self)
     .map((a) => a.email);
+}
+
+function upsertClientAttendee(
+  attendees: CalendarAttendee[],
+  email: string,
+  displayName?: string
+): CalendarAttendee[] {
+  const nextAttendees = [...attendees];
+  const clientIndex = nextAttendees.findIndex((attendee) => !attendee.self);
+
+  if (clientIndex >= 0) {
+    nextAttendees[clientIndex] = {
+      ...nextAttendees[clientIndex],
+      email,
+      ...(displayName ? { displayName } : {}),
+    };
+    return nextAttendees;
+  }
+
+  nextAttendees.push({
+    email,
+    ...(displayName ? { displayName } : {}),
+  });
+
+  return nextAttendees;
+}
+
+function buildLocalDateTime(date: string, time: string): string {
+  const localDate = new Date(`${date}T${time}`);
+  return localDate.toISOString();
 }
 
 export function getEventDateTime(event: CalendarEvent): Date {
@@ -129,4 +261,36 @@ export function groupEventsByDate(events: CalendarEvent[]): Map<string, Calendar
   }
 
   return groups;
+}
+
+export function getLinkedDocuments(event: CalendarEvent): LinkedDocument[] {
+  const raw = event.extendedProperties?.private?.sphericalLinkedDocs;
+  if (!raw) return [];
+
+  try {
+    return JSON.parse(raw) as LinkedDocument[];
+  } catch {
+    return [];
+  }
+}
+
+export async function addLinkedDocument(
+  accessToken: string,
+  event: CalendarEvent,
+  doc: LinkedDocument
+): Promise<CalendarEvent> {
+  const existing = getLinkedDocuments(event);
+  const updated = [...existing, doc];
+
+  return calendarFetch<CalendarEvent>(accessToken, `/calendars/primary/events/${event.id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      extendedProperties: {
+        private: {
+          ...event.extendedProperties?.private,
+          sphericalLinkedDocs: JSON.stringify(updated),
+        },
+      },
+    }),
+  });
 }

@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>David Hurvitz Law Offices — Free Consultation</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: Georgia, "Times New Roman", serif;
+      color: #1a1a1a;
+      background: #f8f7f2;
+      line-height: 1.6;
+    }
+    .site-header {
+      background: #0f1a2e;
+      color: white;
+      padding: 20px 40px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .site-logo { font-size: 22px; font-weight: 700; letter-spacing: 0.5px; }
+    .site-nav a {
+      color: #cbd5e1;
+      text-decoration: none;
+      margin-left: 24px;
+      font-size: 14px;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    .hero {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 80px 40px;
+      text-align: center;
+    }
+    .hero h1 {
+      font-size: 48px;
+      font-weight: 400;
+      margin-bottom: 20px;
+      color: #0f1a2e;
+    }
+    .hero p {
+      font-size: 18px;
+      color: #555;
+      max-width: 640px;
+      margin: 0 auto 32px;
+    }
+    .hero-cta {
+      display: inline-block;
+      background: #b8860b;
+      color: white;
+      padding: 16px 32px;
+      text-decoration: none;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 16px;
+      letter-spacing: 0.5px;
+      border-radius: 2px;
+    }
+    .practice {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 60px 40px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 32px;
+    }
+    .practice-card {
+      background: white;
+      padding: 32px 24px;
+      border-left: 3px solid #b8860b;
+    }
+    .practice-card h3 {
+      font-size: 20px;
+      margin-bottom: 12px;
+      color: #0f1a2e;
+    }
+    .practice-card p {
+      font-size: 14px;
+      color: #555;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    .site-footer {
+      background: #0f1a2e;
+      color: #94a3b8;
+      padding: 40px;
+      text-align: center;
+      font-size: 13px;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    .demo-note {
+      background: #fef3c7;
+      border-top: 2px solid #b8860b;
+      border-bottom: 2px solid #b8860b;
+      padding: 16px 40px;
+      text-align: center;
+      font-size: 13px;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      color: #78350f;
+    }
+    @media (max-width: 720px) {
+      .practice { grid-template-columns: 1fr; }
+      .hero h1 { font-size: 32px; }
+      .hero { padding: 48px 24px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-logo">David Hurvitz Law Offices</div>
+    <nav class="site-nav">
+      <a href="#">About</a>
+      <a href="#">Practice Areas</a>
+      <a href="#">Results</a>
+      <a href="#">Contact</a>
+    </nav>
+  </header>
+
+  <div class="demo-note">
+    🧪 Widget demo page — simulates a law firm website. The intake bubble should pop up in the bottom-right after ~3 seconds.
+  </div>
+
+  <section class="hero">
+    <h1>Protecting your rights. Fighting for your future.</h1>
+    <p>
+      With over 25 years of experience in criminal defense and personal injury
+      law, we provide aggressive, results-oriented representation for clients
+      across New York.
+    </p>
+    <a href="#" class="hero-cta">Free Consultation</a>
+  </section>
+
+  <section class="practice">
+    <div class="practice-card">
+      <h3>Criminal Defense</h3>
+      <p>DWI, drug offenses, assault, theft, and white-collar crimes.</p>
+    </div>
+    <div class="practice-card">
+      <h3>Personal Injury</h3>
+      <p>Car accidents, slip and fall, medical malpractice, wrongful death.</p>
+    </div>
+    <div class="practice-card">
+      <h3>Family Law</h3>
+      <p>Divorce, custody, child support, orders of protection.</p>
+    </div>
+  </section>
+
+  <footer class="site-footer">
+    &copy; David Hurvitz Law Offices &middot; Admitted in NY, NJ &middot; Attorney Advertising
+  </footer>
+
+  <!-- Spherical Assistant intake widget -->
+  <script
+    src="/sphericalassistant/widget.js"
+    data-firm="David Hurvitz Law Offices"
+    data-greeting="Hi! Need a free consultation? I can get you on the attorney's calendar in under 3 minutes."
+    data-accent="#b8860b"
+    data-delay="3"
+    async
+  ></script>
+</body>
+</html>

@@ -1,14 +1,53 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { GoogleUser, CalendarEvent, ClientContact, AppointmentAnalysis, WorkflowState } from './types.ts';
+import type {
+  AssistantActionItem,
+  AssistantReminderData,
+  BusinessInsights,
+  GoogleUser,
+  CalendarEvent,
+  ClientContact,
+  AppointmentAnalysis,
+  MorningBrief,
+  WorkflowState,
+  DraftPreviewData,
+  ActionResultStatus,
+  ContactFormData,
+  AppointmentFormData,
+  EmailPreferences,
+} from './types.ts';
 import { initAuth, requestToken, revokeToken } from './lib/auth.ts';
-import { fetchUpcomingEvents, getAttendeeEmails, getWorkflowState, updateEventWorkflow, parseServiceType } from './lib/calendar.ts';
-import { lookupContactByEmail, createContact } from './lib/contacts.ts';
-import { createDraft } from './lib/gmail.ts';
-import { analyzeAppointment, generateEmailDraft, generateEstimate } from './lib/gemini.ts';
+import {
+  createAssistantReminderEvent,
+  fetchUpcomingEvents,
+  createCalendarEvent,
+  getAttendeeEmails,
+  getAssistantReminder,
+  getWorkflowState,
+  isAssistantReminderEvent,
+  updateEventAttendee,
+  updateEventWorkflow,
+  parseServiceType,
+  addLinkedDocument,
+} from './lib/calendar.ts';
+import { lookupContactByEmail, createContact, listContacts, searchContacts } from './lib/contacts.ts';
+import { createDraft, sendMessage, sendScheduled } from './lib/gmail.ts';
+import {
+  analyzeAppointment,
+  generateBusinessInsights,
+  generateEmailDraft,
+  generateEstimate,
+  generateMorningBrief,
+  refineEmailDraft,
+} from './lib/gemini.ts';
+import { loadEmailPreferences, saveEmailPreferences } from './lib/preferences.ts';
+import { createGoogleDoc, createGoogleSlides } from './lib/docs.ts';
 import Login from './components/Login.tsx';
 import Header from './components/Header.tsx';
 import Dashboard from './components/Dashboard.tsx';
 import AppointmentDetail from './components/AppointmentDetail.tsx';
+import DraftPreview from './components/DraftPreview.tsx';
+import NewAppointmentModal from './components/NewAppointmentModal.tsx';
+import EmailPreferencesModal from './components/EmailPreferencesModal.tsx';
 
 type View = 'login' | 'dashboard' | 'detail';
 
@@ -19,19 +58,39 @@ export default function App() {
 
   const [view, setView] = useState<View>('login');
   const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [assistantReminderEvents, setAssistantReminderEvents] = useState<CalendarEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
+  const [creatingAppointment, setCreatingAppointment] = useState(false);
+  const [showNewAppointmentModal, setShowNewAppointmentModal] = useState(false);
+  const [showPreferencesModal, setShowPreferencesModal] = useState(false);
 
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
   const [clientContact, setClientContact] = useState<ClientContact | null>(null);
   const [contactLoading, setContactLoading] = useState(false);
   const [creatingContact, setCreatingContact] = useState(false);
+  const [updatingEmail, setUpdatingEmail] = useState(false);
   const [attendeeEmail, setAttendeeEmail] = useState('');
+  const [contactSuggestions, setContactSuggestions] = useState<ClientContact[]>([]);
+  const [contactsLoading, setContactsLoading] = useState(false);
 
   const [analysis, setAnalysis] = useState<AppointmentAnalysis | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
+  const [insights, setInsights] = useState<BusinessInsights | null>(null);
+  const [insightsLoading, setInsightsLoading] = useState(false);
+  const [morningBrief, setMorningBrief] = useState<MorningBrief | null>(null);
+  const [morningBriefLoading, setMorningBriefLoading] = useState(false);
+  const [creatingReminder, setCreatingReminder] = useState<string | null>(null);
 
   const [actionLoading, setActionLoading] = useState<Record<string, boolean>>({});
-  const [actionResults, setActionResults] = useState<Record<string, 'success' | 'error'>>({});
+  const [actionResults, setActionResults] = useState<Record<string, ActionResultStatus>>({});
+
+  const [creatingDoc, setCreatingDoc] = useState(false);
+  const [creatingSlides, setCreatingSlides] = useState(false);
+
+  const [draftPreview, setDraftPreview] = useState<DraftPreviewData | null>(null);
+  const [sendingDraft, setSendingDraft] = useState(false);
+  const [refiningDraft, setRefiningDraft] = useState(false);
+  const [emailPreferences, setEmailPreferences] = useState<EmailPreferences>(() => loadEmailPreferences());
 
   const [error, setError] = useState('');
 
@@ -42,6 +101,11 @@ export default function App() {
         setUser(googleUser);
         setAuthLoading(false);
         setAuthError('');
+        setEmailPreferences((current) => ({
+          ...current,
+          businessName: current.businessName || 'Spherical Assistant',
+          senderName: current.senderName || googleUser.name,
+        }));
         setView('dashboard');
       },
       (err) => {
@@ -58,7 +122,8 @@ export default function App() {
     setError('');
     try {
       const items = await fetchUpcomingEvents(user.accessToken);
-      setEvents(items);
+      setEvents(items.filter((event) => !isAssistantReminderEvent(event)));
+      setAssistantReminderEvents(items.filter((event) => isAssistantReminderEvent(event)));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load events');
     } finally {
@@ -88,17 +153,25 @@ export default function App() {
     setSelectedEvent(null);
     setClientContact(null);
     setAnalysis(null);
+    setInsights(null);
+    setMorningBrief(null);
     setActionLoading({});
     setActionResults({});
+    setDraftPreview(null);
+    setContactSuggestions([]);
     setError('');
   }
 
   async function handleSelectEvent(event: CalendarEvent) {
     setSelectedEvent(event);
     setAnalysis(null);
+    setInsights(null);
+    setMorningBrief(null);
     setActionLoading({});
     setActionResults({});
     setClientContact(null);
+    setDraftPreview(null);
+    setContactSuggestions([]);
     setView('detail');
 
     const emails = getAttendeeEmails(event);
@@ -116,6 +189,10 @@ export default function App() {
         setContactLoading(false);
       }
     }
+
+    if (user) {
+      void loadContactSuggestions('');
+    }
   }
 
   function handleBack() {
@@ -123,15 +200,37 @@ export default function App() {
     setSelectedEvent(null);
     setClientContact(null);
     setAnalysis(null);
+    setMorningBrief(null);
     setActionLoading({});
     setActionResults({});
+    setDraftPreview(null);
+    setContactSuggestions([]);
+  }
+
+  function handleOpenNewAppointmentModal() {
+    setError('');
+    setShowNewAppointmentModal(true);
+  }
+
+  function handleCloseNewAppointmentModal() {
+    setShowNewAppointmentModal(false);
+  }
+
+  function handleOpenPreferencesModal() {
+    setShowPreferencesModal(true);
+  }
+
+  function handleSavePreferences(preferences: EmailPreferences) {
+    setEmailPreferences(preferences);
+    saveEmailPreferences(preferences);
+    setShowPreferencesModal(false);
   }
 
   async function handleAnalyze() {
     if (!selectedEvent || !user) return;
     setAnalyzing(true);
     try {
-      const result = await analyzeAppointment(selectedEvent, clientContact);
+      const result = await analyzeAppointment(selectedEvent, clientContact, emailPreferences);
       setAnalysis(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Analysis failed');
@@ -140,12 +239,19 @@ export default function App() {
     }
   }
 
-  async function handleCreateContact(data: { name: string; email: string; phone: string; address: string }) {
+  async function handleCreateContact(data: ContactFormData) {
     if (!user) return;
     setCreatingContact(true);
+    setError('');
     try {
       const contact = await createContact(user.accessToken, data);
       setClientContact(contact);
+      setAttendeeEmail(data.email);
+      try {
+        await syncAppointmentEmail(data.email, data.name);
+      } catch (err) {
+        setError(err instanceof Error ? `Contact saved, but failed to sync appointment email: ${err.message}` : 'Contact saved, but failed to sync appointment email');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create contact');
     } finally {
@@ -153,56 +259,158 @@ export default function App() {
     }
   }
 
+  async function handleCreateDoc() {
+    if (!user || !selectedEvent) return;
+    setCreatingDoc(true);
+    setError('');
+    try {
+      const title = `${parseServiceType(selectedEvent.summary)} - Notes`;
+      const doc = await createGoogleDoc(user.accessToken, title);
+      const updatedEvent = await addLinkedDocument(user.accessToken, selectedEvent, doc);
+      setSelectedEvent(updatedEvent);
+      setEvents((prev) => prev.map((e) => (e.id === updatedEvent.id ? updatedEvent : e)));
+      window.open(doc.url, '_blank');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create Google Doc');
+    } finally {
+      setCreatingDoc(false);
+    }
+  }
+
+  async function handleCreateSlides() {
+    if (!user || !selectedEvent) return;
+    setCreatingSlides(true);
+    setError('');
+    try {
+      const title = `${parseServiceType(selectedEvent.summary)} - Presentation`;
+      const slides = await createGoogleSlides(user.accessToken, title);
+      const updatedEvent = await addLinkedDocument(user.accessToken, selectedEvent, slides);
+      setSelectedEvent(updatedEvent);
+      setEvents((prev) => prev.map((e) => (e.id === updatedEvent.id ? updatedEvent : e)));
+      window.open(slides.url, '_blank');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create Google Slides');
+    } finally {
+      setCreatingSlides(false);
+    }
+  }
+
+  async function syncAppointmentEmail(email: string, displayName?: string) {
+    if (!user || !selectedEvent) {
+      setAttendeeEmail(email);
+      return;
+    }
+
+    try {
+      const updatedEvent = await updateEventAttendee(user.accessToken, selectedEvent, email, displayName);
+      setSelectedEvent(updatedEvent);
+      setEvents((prev) => prev.map((event) => (event.id === updatedEvent.id ? updatedEvent : event)));
+      setAttendeeEmail(email);
+    } catch (err) {
+      setAttendeeEmail(email);
+      throw err;
+    }
+  }
+
+  async function handleUpdateAttendeeEmail(email: string) {
+    const normalizedEmail = email.trim();
+    if (!normalizedEmail || !user) return;
+
+    setUpdatingEmail(true);
+    setError('');
+    try {
+      await syncAppointmentEmail(normalizedEmail, clientContact?.name);
+      const contact = await lookupContactByEmail(user.accessToken, normalizedEmail);
+      setClientContact(contact);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update appointment email');
+    } finally {
+      setUpdatingEmail(false);
+    }
+  }
+
+  const loadContactSuggestions = useCallback(async (query: string) => {
+    if (!user) return;
+
+    setContactsLoading(true);
+    try {
+      const results = query.trim()
+        ? await searchContacts(user.accessToken, query)
+        : await listContacts(user.accessToken);
+      setContactSuggestions(results);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load contacts');
+    } finally {
+      setContactsLoading(false);
+    }
+  }, [user]);
+
+  async function handleSelectContact(contact: ClientContact) {
+    setClientContact(contact);
+    await handleUpdateAttendeeEmail(contact.email);
+  }
+
+  // Generate the email via AI, then show preview
   async function handleAction(actionId: string) {
     if (!selectedEvent || !user) return;
 
     setActionLoading((prev) => ({ ...prev, [actionId]: true }));
+    setError('');
 
     try {
-      const actionType = actionId as 'confirm' | 'confirmation' | 'reminder' | 'followup' | 'estimate';
-      const email = attendeeEmail;
+      const actionType = actionId as 'confirm' | 'reminder' | 'followup' | 'estimate';
+      let subject: string;
+      let body: string;
 
       if (actionType === 'estimate') {
         const serviceType = parseServiceType(selectedEvent.summary);
         const estimate = await generateEstimate(serviceType, selectedEvent.description || '', clientContact);
-        if (email) {
-          await createDraft(
-            user.accessToken,
-            email,
-            `Service Estimate: ${serviceType}`,
-            estimate.estimateText
-          );
-        }
+        subject = `Service Estimate: ${serviceType}`;
+        body = estimate.estimateText;
       } else {
         const draftType = actionType === 'confirm' ? 'confirmation' as const : actionType as 'reminder' | 'followup';
-        const draft = await generateEmailDraft(draftType, selectedEvent, clientContact);
-        if (email) {
-          await createDraft(user.accessToken, email, draft.subject, draft.body);
-        }
+        const draft = await generateEmailDraft(draftType, selectedEvent, clientContact, emailPreferences);
+        subject = draft.subject;
+        body = draft.body;
       }
 
-      setActionResults((prev) => ({ ...prev, [actionId]: 'success' }));
+      // Show preview instead of silently creating draft
+      setDraftPreview({
+        to: attendeeEmail,
+        subject,
+        body,
+        actionId,
+      });
 
-      // Update workflow status
-      const currentState = getWorkflowState(selectedEvent);
-      const newState: WorkflowState = { ...currentState };
+    } catch (err) {
+      setActionResults((prev) => ({ ...prev, [actionId]: 'error' }));
+      setError(err instanceof Error ? err.message : 'Failed to generate email');
+    } finally {
+      setActionLoading((prev) => ({ ...prev, [actionId]: false }));
+    }
+  }
 
-      if (actionType === 'confirm') {
-        newState.status = 'confirmed';
-        newState.confirmedAt = new Date().toISOString();
-      } else if (actionType === 'reminder') {
-        newState.status = 'reminded';
-        newState.remindedAt = new Date().toISOString();
-      } else if (actionType === 'followup') {
-        newState.status = 'followed-up';
-        newState.followedUpAt = new Date().toISOString();
-      } else if (actionType === 'estimate') {
-        newState.estimateSent = true;
-      }
+  async function updateWorkflowAfterAction(actionId: string) {
+    if (!selectedEvent || !user) return;
 
+    const currentState = getWorkflowState(selectedEvent);
+    const newState: WorkflowState = { ...currentState };
+
+    if (actionId === 'confirm') {
+      newState.status = 'confirmed';
+      newState.confirmedAt = new Date().toISOString();
+    } else if (actionId === 'reminder') {
+      newState.status = 'reminded';
+      newState.remindedAt = new Date().toISOString();
+    } else if (actionId === 'followup') {
+      newState.status = 'followed-up';
+      newState.followedUpAt = new Date().toISOString();
+    } else if (actionId === 'estimate') {
+      newState.estimateSent = true;
+    }
+
+    try {
       await updateEventWorkflow(user.accessToken, selectedEvent.id, newState);
-
-      // Update the event in our local state
       setSelectedEvent((prev) => prev ? {
         ...prev,
         extendedProperties: {
@@ -213,14 +421,204 @@ export default function App() {
           },
         },
       } : prev);
-
-    } catch (err) {
-      setActionResults((prev) => ({ ...prev, [actionId]: 'error' }));
-      setError(err instanceof Error ? err.message : 'Action failed');
-    } finally {
-      setActionLoading((prev) => ({ ...prev, [actionId]: false }));
+    } catch {
+      // Non-critical -- workflow update failed but email was sent/saved
     }
   }
+
+  async function handleSaveDraft(draft: DraftPreviewData) {
+    if (!user) return;
+    setSendingDraft(true);
+    setError('');
+    try {
+      await createDraft(user.accessToken, draft.to, draft.subject, draft.body);
+      setActionResults((prev) => ({ ...prev, [draft.actionId]: 'drafted' }));
+      await updateWorkflowAfterAction(draft.actionId);
+      setDraftPreview(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save draft');
+    } finally {
+      setSendingDraft(false);
+    }
+  }
+
+  async function handleSendNow(draft: DraftPreviewData) {
+    if (!user) return;
+    setSendingDraft(true);
+    setError('');
+    try {
+      await sendMessage(user.accessToken, draft.to, draft.subject, draft.body);
+      setActionResults((prev) => ({ ...prev, [draft.actionId]: 'sent' }));
+      await updateWorkflowAfterAction(draft.actionId);
+      setDraftPreview(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to send email');
+    } finally {
+      setSendingDraft(false);
+    }
+  }
+
+  async function handleSchedule(draft: DraftPreviewData, sendAt: Date) {
+    if (!user) return;
+    setSendingDraft(true);
+    setError('');
+    try {
+      await sendScheduled(user.accessToken, draft.to, draft.subject, draft.body, sendAt);
+      setActionResults((prev) => ({ ...prev, [draft.actionId]: 'scheduled' }));
+      await updateWorkflowAfterAction(draft.actionId);
+      setDraftPreview(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to schedule email');
+    } finally {
+      setSendingDraft(false);
+    }
+  }
+
+  async function handleRefineDraft(draft: DraftPreviewData, instruction: string) {
+    if (!selectedEvent) return;
+
+    setRefiningDraft(true);
+    setError('');
+    try {
+      const refined = await refineEmailDraft(instruction, draft, selectedEvent, clientContact, emailPreferences);
+      setDraftPreview({
+        ...draft,
+        subject: refined.subject,
+        body: refined.body,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to refine draft');
+    } finally {
+      setRefiningDraft(false);
+    }
+  }
+
+  async function handleCreateAppointment(form: AppointmentFormData) {
+    if (!user) return;
+
+    setCreatingAppointment(true);
+    setError('');
+    try {
+      const createdEvent = await createCalendarEvent(user.accessToken, form);
+      setEvents((prev) =>
+        [...prev, createdEvent].sort((a, b) => {
+          const aStart = new Date(a.start.dateTime || a.start.date || '').getTime();
+          const bStart = new Date(b.start.dateTime || b.start.date || '').getTime();
+          return aStart - bStart;
+        })
+      );
+      setShowNewAppointmentModal(false);
+      await handleSelectEvent(createdEvent);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create appointment');
+    } finally {
+      setCreatingAppointment(false);
+    }
+  }
+
+  async function handleGenerateInsights() {
+    if (!user || events.length === 0) return;
+
+    setInsightsLoading(true);
+    setError('');
+    try {
+      const result = await generateBusinessInsights(events, emailPreferences);
+      setInsights(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to generate business insights');
+    } finally {
+      setInsightsLoading(false);
+    }
+  }
+
+  async function handleGenerateMorningBrief() {
+    if (!user) return;
+
+    const todaysEvents = getEventsForDate(events, new Date());
+    setMorningBriefLoading(true);
+    setError('');
+    try {
+      const result = await generateMorningBrief(todaysEvents, emailPreferences);
+      setMorningBrief(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to generate morning brief');
+    } finally {
+      setMorningBriefLoading(false);
+    }
+  }
+
+  async function handleCreateActionReminder(action: AssistantActionItem) {
+    if (!user) return;
+
+    const existingReminder = assistantReminderEvents.some((event) => {
+      const reminder = getAssistantReminder(event);
+      return reminder?.type === mapActionTypeToReminderType(action.type) && reminder?.eventId === action.eventId;
+    });
+
+    if (existingReminder) {
+      setError('A reminder already exists for that action.');
+      return;
+    }
+
+    setCreatingReminder(action.id);
+    setError('');
+    try {
+      const reminder = buildReminderFromAction(action);
+      const reminderTime = getReminderTimeForAction(action);
+      const created = await createAssistantReminderEvent(user.accessToken, reminder, reminderTime);
+      setAssistantReminderEvents((prev) => [...prev, created]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create reminder event');
+    } finally {
+      setCreatingReminder(null);
+    }
+  }
+
+  async function handleCreateMorningBriefReminder() {
+    if (!user || !morningBrief) return;
+
+    const existingReminder = assistantReminderEvents.some((event) => {
+      const reminder = getAssistantReminder(event);
+      return reminder?.type === 'morning-brief';
+    });
+
+    if (existingReminder) {
+      setError('A morning brief reminder already exists.');
+      return;
+    }
+
+    setCreatingReminder('morning-brief');
+    setError('');
+    try {
+      const reminderTime = getNextMorningBriefTime();
+      const created = await createAssistantReminderEvent(
+        user.accessToken,
+        {
+          type: 'morning-brief',
+          title: morningBrief.headline,
+          detail: [
+            morningBrief.summary,
+            '',
+            'Priorities:',
+            ...morningBrief.priorities.map((item) => `- ${item}`),
+            '',
+            'Risks:',
+            ...morningBrief.risks.map((item) => `- ${item}`),
+            '',
+            `Suggested focus: ${morningBrief.suggestedFocus}`,
+          ].join('\n'),
+        },
+        reminderTime
+      );
+      setAssistantReminderEvents((prev) => [...prev, created]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create morning brief reminder');
+    } finally {
+      setCreatingReminder(null);
+    }
+  }
+
+  const actionItems = buildAssistantActionItems(events, emailPreferences);
 
   return (
     <div className="app">
@@ -230,26 +628,48 @@ export default function App() {
 
       {view === 'dashboard' && user && (
         <>
-          <Header user={user} onLogout={handleLogout} />
+          <Header user={user} onLogout={handleLogout} onOpenSettings={handleOpenPreferencesModal} />
           <Dashboard
             events={events}
             loading={eventsLoading}
             onRefresh={loadEvents}
             onSelectEvent={handleSelectEvent}
+            onCreateAppointment={handleOpenNewAppointmentModal}
+            insights={insights}
+            insightsLoading={insightsLoading}
+            onGenerateInsights={handleGenerateInsights}
+            morningBrief={morningBrief}
+            morningBriefLoading={morningBriefLoading}
+            onGenerateMorningBrief={handleGenerateMorningBrief}
+            onCreateMorningBriefReminder={handleCreateMorningBriefReminder}
+            actionItems={actionItems}
+            onCreateActionReminder={handleCreateActionReminder}
+            creatingReminderId={creatingReminder}
+            firmName={emailPreferences.businessName || 'Your Firm'}
           />
         </>
       )}
 
       {view === 'detail' && user && selectedEvent && (
         <>
-          <Header user={user} onLogout={handleLogout} onBack={handleBack} showBack />
+          <Header user={user} onLogout={handleLogout} onOpenSettings={handleOpenPreferencesModal} onBack={handleBack} showBack />
           <AppointmentDetail
             event={selectedEvent}
             contact={clientContact}
             contactLoading={contactLoading}
             attendeeEmail={attendeeEmail}
+            contactSuggestions={contactSuggestions}
+            contactsLoading={contactsLoading}
+            onSearchContacts={loadContactSuggestions}
+            onSelectContact={handleSelectContact}
+            onUpdateEmail={handleUpdateAttendeeEmail}
+            updatingEmail={updatingEmail}
             onCreateContact={handleCreateContact}
             creatingContact={creatingContact}
+            onCreateDoc={handleCreateDoc}
+            onCreateSlides={handleCreateSlides}
+            creatingDoc={creatingDoc}
+            creatingSlides={creatingSlides}
             analysis={analysis}
             analyzing={analyzing}
             onAnalyze={handleAnalyze}
@@ -258,6 +678,38 @@ export default function App() {
             onAction={handleAction}
           />
         </>
+      )}
+
+      {draftPreview && (
+        <DraftPreview
+          draft={draftPreview}
+          onSaveDraft={handleSaveDraft}
+          onSendNow={handleSendNow}
+          onSchedule={handleSchedule}
+          onRefine={handleRefineDraft}
+          onClose={() => setDraftPreview(null)}
+          sending={sendingDraft}
+          refining={refiningDraft}
+        />
+      )}
+
+      {showNewAppointmentModal && (
+        <NewAppointmentModal
+          suggestions={contactSuggestions}
+          contactsLoading={contactsLoading}
+          saving={creatingAppointment}
+          onSearchContacts={loadContactSuggestions}
+          onCreate={handleCreateAppointment}
+          onClose={handleCloseNewAppointmentModal}
+        />
+      )}
+
+      {showPreferencesModal && (
+        <EmailPreferencesModal
+          initialPreferences={emailPreferences}
+          onSave={handleSavePreferences}
+          onClose={() => setShowPreferencesModal(false)}
+        />
       )}
 
       {error && view !== 'login' && (
@@ -270,4 +722,170 @@ export default function App() {
       <footer>Spherical Assistant &middot; SphereLabs AI</footer>
     </div>
   );
+}
+
+function buildAssistantActionItems(events: CalendarEvent[], preferences: EmailPreferences): AssistantActionItem[] {
+  const now = new Date();
+  const items: AssistantActionItem[] = [];
+
+  for (const event of events) {
+    const startIso = event.start.dateTime || event.start.date || '';
+    const endIso = event.end.dateTime || event.end.date || '';
+    const start = startIso ? new Date(startIso) : null;
+    const end = endIso ? new Date(endIso) : null;
+    const workflow = getWorkflowState(event);
+    const attendeeEmails = getAttendeeEmails(event);
+    const serviceType = parseServiceType(event.summary);
+
+    if (start && start.getTime() - now.getTime() <= 24 * 60 * 60 * 1000 && start > now && workflow.status === 'new') {
+      items.push({
+        id: `${event.id}-confirm`,
+        eventId: event.id,
+        eventTitle: event.summary,
+        eventStart: start.toISOString(),
+        type: 'confirmation',
+        title: `Confirmation needed for ${serviceType}`,
+        detail: 'This appointment is coming up soon and has not been marked confirmed yet.',
+        priority: 'high',
+      });
+    }
+
+    if (attendeeEmails.length === 0) {
+      items.push({
+        id: `${event.id}-email`,
+        eventId: event.id,
+        eventTitle: event.summary,
+        eventStart: startIso,
+        type: 'missing-info',
+        title: `Missing client email for ${serviceType}`,
+        detail: 'Add an attendee email so confirmations, reminders, and follow-ups can be drafted.',
+        priority: 'high',
+      });
+    }
+
+    if (!event.location?.trim()) {
+      items.push({
+        id: `${event.id}-location`,
+        eventId: event.id,
+        eventTitle: event.summary,
+        eventStart: startIso,
+        type: 'missing-info',
+        title: `Missing location for ${serviceType}`,
+        detail: 'Add the service address or meeting location so the schedule stays reliable.',
+        priority: 'medium',
+      });
+    }
+
+    if (
+      start &&
+      end &&
+      start <= now &&
+      end <= now &&
+      now.getTime() - end.getTime() <= 12 * 60 * 60 * 1000 &&
+      workflow.status !== 'followed-up'
+    ) {
+      items.push({
+        id: `${event.id}-followup`,
+        eventId: event.id,
+        eventTitle: event.summary,
+        eventStart: end.toISOString(),
+        type: preferences.reviewLink ? 'review' : 'followup',
+        title: preferences.reviewLink ? `Review request ready for ${serviceType}` : `Post-appointment follow-up for ${serviceType}`,
+        detail: preferences.reviewLink
+          ? 'The appointment ended recently. Queue a thank-you and review request while the experience is still fresh.'
+          : 'The appointment ended recently. A thank-you or follow-up is likely due.',
+        priority: 'medium',
+      });
+    }
+
+    if (/estimate/i.test(event.summary) && !workflow.estimateSent) {
+      items.push({
+        id: `${event.id}-estimate`,
+        eventId: event.id,
+        eventTitle: event.summary,
+        eventStart: startIso,
+        type: 'estimate',
+        title: `Estimate workflow for ${serviceType}`,
+        detail: 'This looks like an estimate-related appointment. Make sure a follow-up estimate gets drafted and tracked.',
+        priority: 'medium',
+      });
+    }
+  }
+
+  if (preferences.repeatBusinessGoals.trim()) {
+    items.push({
+      id: 'marketing-reactivation',
+      eventId: 'marketing-reactivation',
+      eventTitle: 'Retention campaign',
+      eventStart: now.toISOString(),
+      type: 'marketing',
+      title: 'Retention campaign opportunity',
+      detail: `Based on the stated repeat-business goals, prepare a nurture or reactivation campaign: ${preferences.repeatBusinessGoals}`,
+      priority: 'low',
+    });
+  }
+
+  const deduped = new Map(items.map((item) => [item.id, item]));
+  return Array.from(deduped.values()).sort((a, b) => priorityScore(b.priority) - priorityScore(a.priority)).slice(0, 8);
+}
+
+function getEventsForDate(events: CalendarEvent[], date: Date): CalendarEvent[] {
+  const target = date.toDateString();
+  return events.filter((event) => {
+    const start = event.start.dateTime || event.start.date;
+    return start ? new Date(start).toDateString() === target : false;
+  });
+}
+
+function buildReminderFromAction(action: AssistantActionItem): AssistantReminderData {
+  return {
+    type: mapActionTypeToReminderType(action.type),
+    eventId: action.eventId,
+    title: action.title,
+    detail: `${action.detail}\n\nRelated appointment: ${action.eventTitle}`,
+  };
+}
+
+function mapActionTypeToReminderType(actionType: AssistantActionItem['type']): AssistantReminderData['type'] {
+  if (actionType === 'confirmation' || actionType === 'estimate' || actionType === 'marketing') {
+    return 'approval';
+  }
+  if (actionType === 'missing-info') return 'missing-info';
+  if (actionType === 'review') return 'review-request';
+  return 'followup';
+}
+
+function getReminderTimeForAction(action: AssistantActionItem): Date {
+  const now = new Date();
+  const reference = action.eventStart ? new Date(action.eventStart) : now;
+
+  if (action.type === 'confirmation') {
+    const reminder = new Date(reference.getTime() - 4 * 60 * 60 * 1000);
+    return reminder > now ? reminder : new Date(now.getTime() + 15 * 60 * 1000);
+  }
+
+  if (action.type === 'missing-info') {
+    return new Date(now.getTime() + 30 * 60 * 1000);
+  }
+
+  if (action.type === 'review' || action.type === 'followup') {
+    return new Date(now.getTime() + 60 * 60 * 1000);
+  }
+
+  return new Date(now.getTime() + 2 * 60 * 60 * 1000);
+}
+
+function getNextMorningBriefTime(): Date {
+  const next = new Date();
+  next.setHours(7, 0, 0, 0);
+  if (next <= new Date()) {
+    next.setDate(next.getDate() + 1);
+  }
+  return next;
+}
+
+function priorityScore(priority: AssistantActionItem['priority']): number {
+  if (priority === 'high') return 3;
+  if (priority === 'medium') return 2;
+  return 1;
 }

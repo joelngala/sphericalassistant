@@ -3,11 +3,12 @@ import type { GoogleUser } from '../types.ts';
 interface HeaderProps {
   user: GoogleUser;
   onLogout: () => void;
+  onOpenSettings: () => void;
   onBack?: () => void;
   showBack?: boolean;
 }
 
-export default function Header({ user, onLogout, onBack, showBack }: HeaderProps) {
+export default function Header({ user, onLogout, onOpenSettings, onBack, showBack }: HeaderProps) {
   return (
     <header>
       <div className="logo">
@@ -28,6 +29,12 @@ export default function Header({ user, onLogout, onBack, showBack }: HeaderProps
       </div>
 
       <div className="header-actions">
+        <button className="btn-icon" onClick={onOpenSettings} title="Email preferences">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="8" cy="8" r="2.5" />
+            <path d="M8 1.5v1.2M8 13.3v1.2M13.3 8h1.2M1.5 8h1.2M11.9 4.1l.8-.8M3.3 12.7l.8-.8M11.9 11.9l.8.8M3.3 3.3l.8.8" />
+          </svg>
+        </button>
         <div className="user-info">
           <img
             src={user.picture}

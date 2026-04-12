@@ -1,19 +1,116 @@
-import { useState } from 'react';
-import type { ClientContact } from '../types.ts';
+import { useEffect, useState } from 'react';
+import type { ClientContact, ContactFormData } from '../types.ts';
 
 interface ClientPanelProps {
   contact: ClientContact | null;
   loading: boolean;
   attendeeEmail: string;
-  onCreateContact: (data: { name: string; email: string; phone: string; address: string }) => void;
+  suggestedName?: string;
+  contactSuggestions: ClientContact[];
+  contactsLoading: boolean;
+  onSearchContacts: (query: string) => Promise<void>;
+  onSelectContact: (contact: ClientContact) => Promise<void>;
+  onUpdateEmail: (email: string) => Promise<void>;
+  updatingEmail: boolean;
+  onCreateContact: (data: ContactFormData) => void;
   creatingContact: boolean;
 }
 
-export default function ClientPanel({ contact, loading, attendeeEmail, onCreateContact, creatingContact }: ClientPanelProps) {
+export default function ClientPanel({
+  contact,
+  loading,
+  attendeeEmail,
+  suggestedName,
+  contactSuggestions,
+  contactsLoading,
+  onSearchContacts,
+  onSelectContact,
+  onUpdateEmail,
+  updatingEmail,
+  onCreateContact,
+  creatingContact,
+}: ClientPanelProps) {
   const [showForm, setShowForm] = useState(false);
-  const [formName, setFormName] = useState('');
+  const [formName, setFormName] = useState(suggestedName || '');
+  const [formEmail, setFormEmail] = useState(attendeeEmail);
   const [formPhone, setFormPhone] = useState('');
   const [formAddress, setFormAddress] = useState('');
+  const [contactQuery, setContactQuery] = useState('');
+
+  useEffect(() => {
+    setFormEmail(attendeeEmail);
+  }, [attendeeEmail]);
+
+  useEffect(() => {
+    if (!formName.trim() && suggestedName) {
+      setFormName(suggestedName);
+    }
+  }, [suggestedName, formName]);
+
+  async function handleSaveClient() {
+    const email = formEmail.trim();
+    if (!formName.trim() || !email || !email.includes('@')) return;
+    await onCreateContact({
+      name: formName.trim(),
+      email,
+      phone: formPhone.trim(),
+      address: formAddress.trim(),
+    });
+  }
+
+  useEffect(() => {
+    void onSearchContacts('');
+  }, [onSearchContacts]);
+
+  async function handleSearchChange(value: string) {
+    setContactQuery(value);
+    await onSearchContacts(value);
+  }
+
+  function renderContactPicker() {
+    return (
+      <div className="contact-picker">
+        <div className="contact-picker-header">
+          <label>Google Contacts</label>
+          <input
+            type="text"
+            placeholder="Search contacts"
+            value={contactQuery}
+            onChange={(e) => {
+              void handleSearchChange(e.target.value);
+            }}
+          />
+        </div>
+        {contactsLoading ? (
+          <div className="contact-picker-loading">
+            <div className="spinner-sm" />
+            <span>Loading contacts...</span>
+          </div>
+        ) : contactSuggestions.length > 0 ? (
+          <div className="contact-suggestion-list">
+            {contactSuggestions.map((suggestedContact) => (
+              <button
+                key={suggestedContact.resourceName || `${suggestedContact.email}-${suggestedContact.name}`}
+                className="contact-suggestion"
+                onClick={() => void onSelectContact(suggestedContact)}
+                disabled={updatingEmail || creatingContact}
+              >
+                <div className="contact-suggestion-main">
+                  <span className="contact-suggestion-name">{suggestedContact.name}</span>
+                  <span className="contact-suggestion-email">{suggestedContact.email}</span>
+                </div>
+                {suggestedContact.phone && (
+                  <span className="contact-suggestion-meta">{suggestedContact.phone}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="hint-text">No matching Google Contacts.</p>
+        )}
+      </div>
+    );
+  }
 
   if (loading) {
     return (
@@ -37,11 +134,12 @@ export default function ClientPanel({ contact, loading, attendeeEmail, onCreateC
             <path d="M22 6l4 4M26 6l-4 4" />
           </svg>
           <p>Not found in contacts</p>
-          <p className="hint-text">{attendeeEmail}</p>
+          <p className="hint-text">{attendeeEmail || 'No client email on this appointment yet'}</p>
           <button className="btn-primary" onClick={() => setShowForm(true)}>
-            Create Contact
+            Add Client
           </button>
         </div>
+        {renderContactPicker()}
       </div>
     );
   }
@@ -56,7 +154,12 @@ export default function ClientPanel({ contact, loading, attendeeEmail, onCreateC
             value={formName}
             onChange={(e) => setFormName(e.target.value)}
           />
-          <input value={attendeeEmail} disabled />
+          <input
+            type="email"
+            placeholder="Email address"
+            value={formEmail}
+            onChange={(e) => setFormEmail(e.target.value)}
+          />
           <input
             placeholder="Phone number"
             value={formPhone}
@@ -71,13 +174,15 @@ export default function ClientPanel({ contact, loading, attendeeEmail, onCreateC
             <button className="btn-secondary" onClick={() => setShowForm(false)}>Cancel</button>
             <button
               className="btn-primary"
-              onClick={() => onCreateContact({ name: formName, email: attendeeEmail, phone: formPhone, address: formAddress })}
-              disabled={!formName.trim() || creatingContact}
+              onClick={handleSaveClient}
+              disabled={!formName.trim() || !formEmail.trim() || !formEmail.includes('@') || creatingContact}
             >
               {creatingContact ? <div className="spinner-sm" /> : 'Save'}
             </button>
           </div>
+          <p className="hint-text">Saving a client here also syncs the appointment email inside the assistant.</p>
         </div>
+        {renderContactPicker()}
       </div>
     );
   }
@@ -126,6 +231,20 @@ export default function ClientPanel({ contact, loading, attendeeEmail, onCreateC
             </div>
           )}
         </div>
+
+        {!attendeeEmail && (
+          <div className="client-inline-action">
+            <button
+              className="btn-secondary"
+              onClick={() => onUpdateEmail(contact.email)}
+              disabled={updatingEmail}
+            >
+              {updatingEmail ? <div className="spinner-sm" /> : 'Use This Email For Appointment'}
+            </button>
+          </div>
+        )}
+
+        {renderContactPicker()}
 
         {contact.notes && (
           <div className="client-notes">

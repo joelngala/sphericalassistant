@@ -1,1 +1,6 @@
 GEMINI_API_KEY=your-gemini-key
+
+# Google OAuth (Web application type) — used by the intake form to create
+# calendar events on the owner's behalf via the offline/refresh-token flow.
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-client-secret

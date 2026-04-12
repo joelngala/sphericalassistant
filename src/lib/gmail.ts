@@ -55,3 +55,61 @@ export async function createDraft(
     gmailUrl: 'https://mail.google.com/mail/#drafts',
   };
 }
+
+export async function sendMessage(
+  accessToken: string,
+  to: string,
+  subject: string,
+  body: string,
+  fromName?: string
+): Promise<{ messageId: string }> {
+  const raw = buildRawMessage(to, subject, body, fromName);
+
+  const response = await fetch(`${GMAIL_BASE}/messages/send`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ raw }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => null);
+    throw new Error(error?.error?.message || `Gmail API error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return { messageId: data.id };
+}
+
+export async function sendScheduled(
+  accessToken: string,
+  to: string,
+  subject: string,
+  body: string,
+  sendAt: Date,
+  fromName?: string
+): Promise<{ draftId: string }> {
+  // Gmail API does not expose native schedule-send here, so we save a draft
+  // with the intended send time at the top of the message.
+  const scheduledNote = `[SCHEDULED TO SEND: ${sendAt.toLocaleString()}]\n\n`;
+  const raw = buildRawMessage(to, subject, scheduledNote + body, fromName);
+
+  const response = await fetch(`${GMAIL_BASE}/drafts`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ message: { raw } }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => null);
+    throw new Error(error?.error?.message || `Gmail API error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return { draftId: data.id };
+}

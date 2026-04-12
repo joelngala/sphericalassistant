@@ -74,3 +74,89 @@ export interface EstimateResult {
   total: string;
   notes: string;
 }
+
+export interface DraftPreviewData {
+  to: string;
+  subject: string;
+  body: string;
+  actionId: string;
+}
+
+export type ActionResultStatus = 'drafted' | 'sent' | 'scheduled' | 'error';
+
+export interface ContactFormData {
+  name: string;
+  email: string;
+  phone: string;
+  address: string;
+}
+
+export interface AppointmentFormData {
+  title: string;
+  clientName: string;
+  clientEmail: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  location: string;
+  notes: string;
+}
+
+export interface EmailPreferences {
+  businessName: string;
+  senderName: string;
+  writingTone: string;
+  generalInstructions: string;
+  confirmationInstructions: string;
+  reminderInstructions: string;
+  followupInstructions: string;
+  signature: string;
+  businessType: string;
+  serviceAreas: string;
+  workingHours: string;
+  leadGoals: string;
+  repeatBusinessGoals: string;
+  noShowPolicy: string;
+  estimatePolicy: string;
+  reviewLink: string;
+  storefrontSummary: string;
+}
+
+export interface AssistantPattern {
+  title: string;
+  insight: string;
+  impact: 'growth' | 'risk' | 'ops';
+}
+
+export interface BusinessInsights {
+  overview: string;
+  patterns: AssistantPattern[];
+  recommendedAutomations: string[];
+  opportunities: string[];
+}
+
+export interface MorningBrief {
+  headline: string;
+  summary: string;
+  priorities: string[];
+  risks: string[];
+  suggestedFocus: string;
+}
+
+export interface AssistantActionItem {
+  id: string;
+  eventId: string;
+  eventTitle: string;
+  eventStart: string;
+  type: 'confirmation' | 'missing-info' | 'followup' | 'estimate' | 'review' | 'marketing';
+  title: string;
+  detail: string;
+  priority: 'high' | 'medium' | 'low';
+}
+
+export interface AssistantReminderData {
+  type: 'morning-brief' | 'approval' | 'followup' | 'missing-info' | 'review-request';
+  eventId?: string;
+  title: string;
+  detail: string;
+}

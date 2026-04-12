@@ -5,3 +5,16 @@ workers_dev = true
 
 [vars]
 ALLOWED_ORIGINS = "https://joelngala.github.io,http://localhost:5173,http://127.0.0.1:5173"
+GOOGLE_CLIENT_ID = "873310561840-mlkjkmhkva583s71spj8ufqc31bavun7.apps.googleusercontent.com"
+
+# KV namespace for storing the owner's Google refresh token (offline access)
+# used by the public intake form to create calendar events on the owner's behalf.
+#
+# Create the namespaces once with:
+#   npx wrangler kv namespace create INTAKE_STORE
+#   npx wrangler kv namespace create INTAKE_STORE --preview
+# then paste the returned IDs below.
+[[kv_namespaces]]
+binding = "INTAKE_STORE"
+id = "ce979878d4f749e7af5c07bbc75c3d5a"
+preview_id = "70c598f6012f45c2bfc9a06cf442800e"
