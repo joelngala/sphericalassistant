@@ -167,7 +167,7 @@ export default function CaseBilling({
               Draft payment email
             </button>
           )}
-          {liveMode && plan.stripeSubscriptionId && (
+          {liveMode && (plan.stripeSessionId || plan.stripeSubscriptionId) && (
             <button className="btn-secondary btn-sm" onClick={onSync} disabled={syncing}>
               {syncing ? 'Syncing…' : 'Sync from Stripe'}
             </button>
