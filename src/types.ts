@@ -246,7 +246,14 @@ export type ActivityAction =
   | 'contact_created'
   | 'contact_updated'
   | 'status_changed'
-  | 'intake_extracted';
+  | 'intake_extracted'
+  | 'billing_plan_created'
+  | 'billing_plan_updated'
+  | 'billing_payment_succeeded'
+  | 'billing_payment_failed'
+  | 'billing_plan_paused'
+  | 'billing_plan_resumed'
+  | 'billing_plan_canceled';
 
 export interface ActivityLogEntry {
   id: string;
@@ -265,5 +272,53 @@ export interface CaseData {
   documents: CaseDocument[];
   chatHistory: CaseChatMessage[];
   activityLog: ActivityLogEntry[];
+  paymentPlan?: PaymentPlan;
   updatedAt: string;
+}
+
+// --- Billing / Payment Plans ---
+
+export type BillingInterval = 'weekly' | 'biweekly' | 'monthly' | 'quarterly';
+
+export type BillingStatus =
+  | 'active'      // subscription current
+  | 'trialing'    // upfront retainer period before first recurring charge
+  | 'past_due'    // invoice failed, in retry window
+  | 'paused'      // lawyer halted representation after missed payments
+  | 'canceled';   // plan ended
+
+export type InvoiceStatus = 'paid' | 'open' | 'failed' | 'void';
+
+export interface PaymentInvoice {
+  id: string;
+  amountCents: number;
+  currency: string;
+  status: InvoiceStatus;
+  createdAt: string;
+  paidAt?: string;
+  failedAt?: string;
+  description?: string;
+}
+
+export interface PaymentPlan {
+  id: string;
+  stripeCustomerId?: string;
+  stripeSubscriptionId?: string;
+  stripePriceId?: string;
+  clientName: string;
+  clientEmail: string;
+  amountCents: number;
+  currency: string;
+  interval: BillingInterval;
+  upfrontRetainerCents?: number;
+  startDate: string;
+  nextChargeDate?: string;
+  status: BillingStatus;
+  failureCount: number;
+  createdAt: string;
+  updatedAt: string;
+  pausedAt?: string;
+  canceledAt?: string;
+  invoices: PaymentInvoice[];
+  notes?: string;
 }

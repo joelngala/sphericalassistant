@@ -24,6 +24,13 @@ const ACTION_CONFIG: Record<ActivityAction, { icon: string; color: string }> = {
   contact_updated: { icon: 'M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M12.5 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0z', color: 'var(--info)' },
   status_changed: { icon: 'M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0 1 12 2.944a11.955 11.955 0 0 1-8.618 3.04A12.02 12.02 0 0 0 3 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z', color: 'var(--warning)' },
   intake_extracted: { icon: 'M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2', color: 'var(--accent)' },
+  billing_plan_created: { icon: 'M3 10h18M5 6h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z', color: 'var(--accent)' },
+  billing_plan_updated: { icon: 'M12 20v-6M9 17l3-3 3 3M3 10h18M5 6h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z', color: 'var(--info)' },
+  billing_payment_succeeded: { icon: 'M5 13l4 4L19 7', color: 'var(--success)' },
+  billing_payment_failed: { icon: 'M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z', color: 'var(--warning)' },
+  billing_plan_paused: { icon: 'M10 4H6v16h4zM18 4h-4v16h4z', color: 'var(--danger)' },
+  billing_plan_resumed: { icon: 'M5 3l14 9-14 9V3z', color: 'var(--success)' },
+  billing_plan_canceled: { icon: 'M18 6L6 18M6 6l12 12', color: 'var(--text-muted)' },
 };
 
 function formatTimestamp(iso: string): string {

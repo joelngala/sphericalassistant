@@ -7,6 +7,8 @@ import type {
   ActivityAction,
   IndustryType,
   DocCategory,
+  PaymentPlan,
+  PaymentInvoice,
 } from '../types.ts';
 
 const STORAGE_PREFIX = 'spherical:case:';
@@ -177,6 +179,39 @@ export function removeDocument(eventId: string, docId: string) {
   if (doc) {
     logActivity(eventId, 'document_removed', `Document removed: ${doc.name}`);
   }
+  saveCase(data);
+}
+
+// --- Payment Plans ---
+
+export function setPaymentPlan(eventId: string, plan: PaymentPlan) {
+  const data = loadCase(eventId);
+  data.paymentPlan = plan;
+  saveCase(data);
+}
+
+export function updatePaymentPlan(
+  eventId: string,
+  updates: Partial<PaymentPlan>,
+): PaymentPlan | null {
+  const data = loadCase(eventId);
+  if (!data.paymentPlan) return null;
+  data.paymentPlan = { ...data.paymentPlan, ...updates, updatedAt: now() };
+  saveCase(data);
+  return data.paymentPlan;
+}
+
+export function addInvoice(eventId: string, invoice: PaymentInvoice) {
+  const data = loadCase(eventId);
+  if (!data.paymentPlan) return;
+  data.paymentPlan.invoices.unshift(invoice);
+  data.paymentPlan.updatedAt = now();
+  saveCase(data);
+}
+
+export function clearPaymentPlan(eventId: string) {
+  const data = loadCase(eventId);
+  data.paymentPlan = undefined;
   saveCase(data);
 }
 

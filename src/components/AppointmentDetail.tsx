@@ -26,7 +26,23 @@ import {
   clearChat,
   logActivity,
   getIndustry,
+  setPaymentPlan,
+  updatePaymentPlan,
+  clearPaymentPlan,
 } from '../lib/caseStore.ts';
+import {
+  createMockPlan,
+  simulateSuccessfulCharge,
+  simulateFailedCharge,
+  pausePlan,
+  resumePlan,
+  cancelPlan,
+  formatAmount,
+  intervalAdverb,
+  statusLabel,
+  statusCls,
+  FAILURE_PAUSE_THRESHOLD,
+} from '../lib/billing.ts';
 import { parseDocument } from '../lib/parseDocument.ts';
 import { generateCaseSummaryPdf } from '../lib/generatePdf.ts';
 import { sendCaseChat, categorizeDocument, suggestTasks } from '../lib/gemini.ts';
@@ -36,8 +52,9 @@ import type { TaskActionType } from './CaseTasks.tsx';
 import CaseDocuments from './CaseDocuments.tsx';
 import CaseChat from './CaseChat.tsx';
 import ActivityLog from './ActivityLog.tsx';
+import CaseBilling from './CaseBilling.tsx';
 
-type CaseTab = 'details' | 'tasks' | 'docs' | 'chat' | 'activity';
+type CaseTab = 'details' | 'tasks' | 'docs' | 'chat' | 'billing' | 'activity';
 
 interface AppointmentDetailProps {
   event: CalendarEvent;
@@ -81,6 +98,7 @@ const TAB_CONFIG: { key: CaseTab; label: string; icon: string }[] = [
   { key: 'tasks', label: 'Tasks', icon: 'M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2m-6 9l2 2 4-4' },
   { key: 'docs', label: 'Docs', icon: 'M7 21h10a2 2 0 0 0 2-2V9.414a1 1 0 0 0-.293-.707l-5.414-5.414A1 1 0 0 0 12.586 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2z' },
   { key: 'chat', label: 'AI Chat', icon: 'M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 0 1-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z' },
+  { key: 'billing', label: 'Billing', icon: 'M3 10h18M5 6h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z' },
   { key: 'activity', label: 'Activity', icon: 'M12 8v4l3 3m6-3a9 9 0 1 1-18 0 9 9 0 0 1 18 0z' },
 ];
 
@@ -328,6 +346,106 @@ export default function AppointmentDetail({
     setActiveTab('chat');
   }
 
+  // --- Billing ---
+  function handleCreatePlan(input: {
+    clientName: string;
+    clientEmail: string;
+    amountCents: number;
+    interval: 'weekly' | 'biweekly' | 'monthly' | 'quarterly';
+    startDate: string;
+    upfrontRetainerCents?: number;
+    notes?: string;
+  }) {
+    const plan = createMockPlan(input);
+    setPaymentPlan(event.id, plan);
+    const detail = `${formatAmount(plan.amountCents, plan.currency)} ${intervalAdverb(plan.interval).toLowerCase()}${
+      plan.upfrontRetainerCents ? ` + ${formatAmount(plan.upfrontRetainerCents, plan.currency)} retainer` : ''
+    }`;
+    logActivity(event.id, 'billing_plan_created', `Payment plan created for ${plan.clientName}`, detail);
+    refreshCase();
+  }
+
+  function handleAdjustPlan(input: {
+    amountCents: number;
+    interval: 'weekly' | 'biweekly' | 'monthly' | 'quarterly';
+    notes?: string;
+  }) {
+    const current = caseData.paymentPlan;
+    if (!current) return;
+    const updated = updatePaymentPlan(event.id, input);
+    if (updated) {
+      const detail = `${formatAmount(current.amountCents, current.currency)} → ${formatAmount(input.amountCents, current.currency)}, ${intervalAdverb(input.interval).toLowerCase()}`;
+      logActivity(event.id, 'billing_plan_updated', 'Payment plan adjusted', detail);
+    }
+    refreshCase();
+  }
+
+  function handlePausePlan() {
+    if (!caseData.paymentPlan) return;
+    const updated = pausePlan(caseData.paymentPlan);
+    setPaymentPlan(event.id, updated);
+    logActivity(event.id, 'billing_plan_paused', 'Representation paused', 'Manual pause by attorney');
+    refreshCase();
+  }
+
+  function handleResumePlan() {
+    if (!caseData.paymentPlan) return;
+    const updated = resumePlan(caseData.paymentPlan);
+    setPaymentPlan(event.id, updated);
+    logActivity(event.id, 'billing_plan_resumed', 'Representation resumed');
+    refreshCase();
+  }
+
+  function handleCancelPlan() {
+    if (!caseData.paymentPlan) return;
+    const updated = cancelPlan(caseData.paymentPlan);
+    setPaymentPlan(event.id, updated);
+    logActivity(event.id, 'billing_plan_canceled', 'Payment plan canceled');
+    refreshCase();
+  }
+
+  function handleSimulateSuccess() {
+    if (!caseData.paymentPlan) return;
+    const updated = simulateSuccessfulCharge(caseData.paymentPlan);
+    setPaymentPlan(event.id, updated);
+    const last = updated.invoices[0];
+    logActivity(
+      event.id,
+      'billing_payment_succeeded',
+      `Payment received: ${formatAmount(last.amountCents, last.currency)}`,
+      last.description,
+    );
+    refreshCase();
+  }
+
+  function handleSimulateFailure() {
+    if (!caseData.paymentPlan) return;
+    const previous = caseData.paymentPlan;
+    const updated = simulateFailedCharge(previous);
+    setPaymentPlan(event.id, updated);
+    const last = updated.invoices[0];
+    logActivity(
+      event.id,
+      'billing_payment_failed',
+      `Payment failed (attempt ${updated.failureCount})`,
+      last.description,
+    );
+    if (updated.status === 'paused' && previous.status !== 'paused') {
+      logActivity(
+        event.id,
+        'billing_plan_paused',
+        'Representation auto-paused',
+        `Triggered after ${FAILURE_PAUSE_THRESHOLD} failed payments`,
+      );
+    }
+    refreshCase();
+  }
+
+  function handleRemovePlan() {
+    clearPaymentPlan(event.id);
+    refreshCase();
+  }
+
   // --- PDF ---
   function handleExportPdf() {
     generateCaseSummaryPdf(caseData, serviceType, clientName);
@@ -392,6 +510,14 @@ export default function AppointmentDetail({
               </svg>
               Export PDF
             </button>
+            {caseData.paymentPlan && (
+              <span
+                className={`status-badge ${statusCls(caseData.paymentPlan.status)}`}
+                title={`Payment plan: ${statusLabel(caseData.paymentPlan.status)}`}
+              >
+                {statusLabel(caseData.paymentPlan.status)}
+              </span>
+            )}
             <StatusBadge workflow={workflow} />
           </div>
         </div>
@@ -653,6 +779,25 @@ export default function AppointmentDetail({
               onSend={handleSendChat}
               onClear={handleClearChat}
               sending={chatSending}
+            />
+          </div>
+        )}
+
+        {/* Billing tab */}
+        {activeTab === 'billing' && (
+          <div className="case-tab-content">
+            <CaseBilling
+              plan={caseData.paymentPlan}
+              defaultClientName={clientName}
+              defaultClientEmail={attendeeEmail}
+              onCreate={handleCreatePlan}
+              onAdjust={handleAdjustPlan}
+              onPause={handlePausePlan}
+              onResume={handleResumePlan}
+              onCancel={handleCancelPlan}
+              onSimulateSuccess={handleSimulateSuccess}
+              onSimulateFailure={handleSimulateFailure}
+              onRemove={handleRemovePlan}
             />
           </div>
         )}
