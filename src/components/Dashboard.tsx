@@ -1,7 +1,9 @@
+import { useState } from 'react';
 import type { AssistantActionItem, BusinessInsights, CalendarEvent, MorningBrief } from '../types.ts';
 import { groupEventsByDate, getEventDateTime } from '../lib/calendar.ts';
 import AppointmentCard from './AppointmentCard.tsx';
 import IntakeConnectCard from './IntakeConnectCard.tsx';
+import NowBar from './NowBar.tsx';
 
 interface DashboardProps {
   events: CalendarEvent[];
@@ -22,6 +24,18 @@ interface DashboardProps {
   firmName: string;
 }
 
+function isToday(date: Date): boolean {
+  const now = new Date();
+  return date.toDateString() === now.toDateString();
+}
+
+function isThisWeek(date: Date): boolean {
+  const now = new Date();
+  const weekEnd = new Date(now);
+  weekEnd.setDate(weekEnd.getDate() + 7);
+  return date >= now && date <= weekEnd;
+}
+
 export default function Dashboard({
   events,
   loading,
@@ -40,22 +54,40 @@ export default function Dashboard({
   creatingReminderId,
   firmName,
 }: DashboardProps) {
+  const [showDeeperView, setShowDeeperView] = useState(false);
+
   const grouped = groupEventsByDate(events);
-  const appointmentsMissingClient = events.filter((event) => !event.attendees?.some((attendee) => !attendee.self)).length;
+
+  const todayEvents = events.filter((event) => {
+    const d = getEventDateTime(event);
+    return !isNaN(d.getTime()) && isToday(d);
+  });
+  const weekEvents = events.filter((event) => {
+    const d = getEventDateTime(event);
+    return !isNaN(d.getTime()) && isThisWeek(d);
+  });
+
+  const highPriorityActions = actionItems.filter((a) => a.priority === 'high').length;
+  const appointmentsMissingClient = events.filter(
+    (event) => !event.attendees?.some((attendee) => !attendee.self)
+  ).length;
   const appointmentsMissingLocation = events.filter((event) => !event.location?.trim()).length;
-  const upcomingSoon = events.filter((event) => {
-    const startDate = getEventDateTime(event);
-    if (isNaN(startDate.getTime())) return false;
-    const now = new Date();
-    return startDate > now && startDate.getTime() - now.getTime() <= 24 * 60 * 60 * 1000;
-  }).length;
+  const needsAttention = highPriorityActions + appointmentsMissingClient + appointmentsMissingLocation;
+
+  const todayLabels = new Set(['Today', 'Tomorrow']);
+  const todayGroups = Array.from(grouped.entries()).filter(([label]) => todayLabels.has(label));
+  const laterGroups = Array.from(grouped.entries()).filter(([label]) => !todayLabels.has(label));
 
   return (
     <main className="dashboard">
       <div className="dashboard-header">
         <div>
-          <h2>Appointments</h2>
-          <p className="subtitle">Next 14 days</p>
+          <h2>Command Center</h2>
+          <p className="subtitle">
+            {todayEvents.length
+              ? `${todayEvents.length} on your plate today`
+              : 'No appointments scheduled today'}
+          </p>
         </div>
         <div className="dashboard-actions">
           <button className="btn-primary" onClick={onCreateAppointment}>
@@ -78,127 +110,31 @@ export default function Dashboard({
         </div>
       </div>
 
+      <NowBar events={events} onOpen={onSelectEvent} />
+
       <section className="insight-grid">
-        <div className="insight-card">
-          <span className="insight-label">Upcoming</span>
-          <strong>{events.length}</strong>
-          <p>Appointments in the next 14 days</p>
+        <div className="insight-card insight-today">
+          <span className="insight-label">Today</span>
+          <strong>{todayEvents.length}</strong>
+          <p>Appointments on the calendar today</p>
         </div>
-        <div className="insight-card">
-          <span className="insight-label">Urgent Fixes</span>
-          <strong>{appointmentsMissingClient + appointmentsMissingLocation}</strong>
-          <p>Appointments missing key scheduling data</p>
+        <div className="insight-card insight-week">
+          <span className="insight-label">This week</span>
+          <strong>{weekEvents.length}</strong>
+          <p>Scheduled within the next seven days</p>
         </div>
-        <div className="insight-card">
-          <span className="insight-label">Next 24h</span>
-          <strong>{upcomingSoon}</strong>
-          <p>Appointments likely needing confirmation or prep</p>
-        </div>
-      </section>
-
-      <IntakeConnectCard firmName={firmName} />
-
-      <section className="dashboard-panels">
-        <div className="dashboard-panel">
-          <div className="panel-header">
-            <div>
-              <h3>State Of Business</h3>
-              <p className="subtitle">Patterns and growth opportunities from the schedule</p>
-            </div>
-            <button className="btn-secondary" onClick={onGenerateInsights} disabled={insightsLoading}>
-              {insightsLoading ? <div className="spinner-sm" /> : 'Generate Insights'}
-            </button>
-          </div>
-          {insights ? (
-            <div className="panel-stack">
-              <p className="panel-summary">{insights.overview}</p>
-              <div className="pattern-list">
-                {insights.patterns.map((pattern) => (
-                  <div key={pattern.title} className={`pattern-card pattern-${pattern.impact}`}>
-                    <div className="pattern-title-row">
-                      <h4>{pattern.title}</h4>
-                      <span>{pattern.impact}</span>
-                    </div>
-                    <p>{pattern.insight}</p>
-                  </div>
-                ))}
-              </div>
-              {insights.opportunities.length > 0 && (
-                <div className="bullet-panel">
-                  <h4>Opportunities</h4>
-                  <ul className="checklist">
-                    {insights.opportunities.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {insights.recommendedAutomations.length > 0 && (
-                <div className="bullet-panel">
-                  <h4>Recommended Automations</h4>
-                  <ul className="checklist">
-                    {insights.recommendedAutomations.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          ) : (
-            <p className="panel-empty">Generate a business snapshot to see operational risks, growth patterns, and automation opportunities.</p>
-          )}
-        </div>
-
-        <div className="dashboard-panel">
-          <div className="panel-header">
-            <div>
-              <h3>Morning Brief</h3>
-              <p className="subtitle">Daily owner briefing generated from today’s calendar</p>
-            </div>
-            <div className="dashboard-actions">
-              <button className="btn-secondary" onClick={onGenerateMorningBrief} disabled={morningBriefLoading}>
-                {morningBriefLoading ? <div className="spinner-sm" /> : 'Generate Brief'}
-              </button>
-              <button className="btn-primary" onClick={onCreateMorningBriefReminder} disabled={!morningBrief || creatingReminderId === 'morning-brief'}>
-                {creatingReminderId === 'morning-brief' ? <div className="spinner-sm" /> : 'Create 7AM Reminder'}
-              </button>
-            </div>
-          </div>
-          {morningBrief ? (
-            <div className="panel-stack">
-              <div className="brief-card">
-                <h4>{morningBrief.headline}</h4>
-                <p>{morningBrief.summary}</p>
-              </div>
-              <div className="bullet-panel">
-                <h4>Priorities</h4>
-                <ul className="checklist">
-                  {morningBrief.priorities.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              </div>
-              <div className="bullet-panel">
-                <h4>Risks</h4>
-                <ul className="checklist">
-                  {morningBrief.risks.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              </div>
-              <p className="panel-summary"><strong>Suggested focus:</strong> {morningBrief.suggestedFocus}</p>
-            </div>
-          ) : (
-            <p className="panel-empty">Generate the owner’s morning brief, then turn it into a Google Calendar reminder event with email + popup notifications.</p>
-          )}
+        <div className={`insight-card insight-attention ${needsAttention ? 'insight-attention-active' : ''}`}>
+          <span className="insight-label">Needs attention</span>
+          <strong>{needsAttention}</strong>
+          <p>High-priority actions and missing scheduling data</p>
         </div>
       </section>
 
-      <section className="dashboard-panel">
+      <section className="dashboard-panel action-center-panel">
         <div className="panel-header">
           <div>
             <h3>Action Center</h3>
-            <p className="subtitle">Work the schedule like a chief of staff: catch missing info, confirmations, follow-ups, and retention opportunities.</p>
+            <p className="subtitle">Catch missing info, confirmations, follow-ups, and retention opportunities.</p>
           </div>
         </div>
         {actionItems.length > 0 ? (
@@ -208,7 +144,7 @@ export default function Dashboard({
                 <div className="action-row-main">
                   <div className="action-row-header">
                     <h4>{action.title}</h4>
-                    <span>{action.priority}</span>
+                    <span className={`priority-pill priority-${action.priority}`}>{action.priority}</span>
                   </div>
                   <p>{action.detail}</p>
                   <button className="text-link" onClick={() => {
@@ -225,7 +161,7 @@ export default function Dashboard({
             ))}
           </div>
         ) : (
-          <p className="panel-empty">No urgent workflow items detected right now.</p>
+          <p className="panel-empty">Nothing urgent. You're clear.</p>
         )}
       </section>
 
@@ -245,20 +181,154 @@ export default function Dashboard({
           <button className="btn-primary" onClick={onCreateAppointment}>Create First Appointment</button>
         </div>
       ) : (
-        <div className="event-list">
-          {Array.from(grouped.entries()).map(([dateLabel, dateEvents]) => (
-            <div key={dateLabel} className="date-group">
-              <h3 className="date-label">{dateLabel}</h3>
-              {dateEvents.map((event) => (
-                <AppointmentCard
-                  key={event.id}
-                  event={event}
-                  onClick={() => onSelectEvent(event)}
-                />
+        <>
+          {todayGroups.length > 0 && (
+            <div className="event-list event-list-today">
+              {todayGroups.map(([dateLabel, dateEvents]) => (
+                <div key={dateLabel} className="date-group">
+                  <h3 className="date-label">{dateLabel}</h3>
+                  {dateEvents.map((event) => (
+                    <AppointmentCard
+                      key={event.id}
+                      event={event}
+                      onClick={() => onSelectEvent(event)}
+                    />
+                  ))}
+                </div>
               ))}
             </div>
-          ))}
-        </div>
+          )}
+
+          {laterGroups.length > 0 && (
+            <details className="event-list-later">
+              <summary>
+                <span>The rest of the week</span>
+                <span className="event-list-later-count">{laterGroups.reduce((n, [, ev]) => n + ev.length, 0)}</span>
+              </summary>
+              <div className="event-list">
+                {laterGroups.map(([dateLabel, dateEvents]) => (
+                  <div key={dateLabel} className="date-group">
+                    <h3 className="date-label">{dateLabel}</h3>
+                    {dateEvents.map((event) => (
+                      <AppointmentCard
+                        key={event.id}
+                        event={event}
+                        onClick={() => onSelectEvent(event)}
+                      />
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </>
+      )}
+
+      <IntakeConnectCard firmName={firmName} compact />
+
+      <button
+        className="btn-secondary dashboard-toggle-deeper"
+        onClick={() => setShowDeeperView((v) => !v)}
+      >
+        {showDeeperView ? 'Hide' : 'Show'} business insights & morning brief
+      </button>
+
+      {showDeeperView && (
+        <section className="dashboard-panels">
+          <div className="dashboard-panel">
+            <div className="panel-header">
+              <div>
+                <h3>State Of Business</h3>
+                <p className="subtitle">Patterns and growth opportunities from the schedule</p>
+              </div>
+              <button className="btn-secondary" onClick={onGenerateInsights} disabled={insightsLoading}>
+                {insightsLoading ? <div className="spinner-sm" /> : 'Generate Insights'}
+              </button>
+            </div>
+            {insights ? (
+              <div className="panel-stack">
+                <p className="panel-summary">{insights.overview}</p>
+                <div className="pattern-list">
+                  {insights.patterns.map((pattern) => (
+                    <div key={pattern.title} className={`pattern-card pattern-${pattern.impact}`}>
+                      <div className="pattern-title-row">
+                        <h4>{pattern.title}</h4>
+                        <span>{pattern.impact}</span>
+                      </div>
+                      <p>{pattern.insight}</p>
+                    </div>
+                  ))}
+                </div>
+                {insights.opportunities.length > 0 && (
+                  <div className="bullet-panel">
+                    <h4>Opportunities</h4>
+                    <ul className="checklist">
+                      {insights.opportunities.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {insights.recommendedAutomations.length > 0 && (
+                  <div className="bullet-panel">
+                    <h4>Recommended Automations</h4>
+                    <ul className="checklist">
+                      {insights.recommendedAutomations.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="panel-empty">Generate a business snapshot to see operational risks, growth patterns, and automation opportunities.</p>
+            )}
+          </div>
+
+          <div className="dashboard-panel">
+            <div className="panel-header">
+              <div>
+                <h3>Morning Brief</h3>
+                <p className="subtitle">Daily owner briefing generated from today's calendar</p>
+              </div>
+              <div className="dashboard-actions">
+                <button className="btn-secondary" onClick={onGenerateMorningBrief} disabled={morningBriefLoading}>
+                  {morningBriefLoading ? <div className="spinner-sm" /> : 'Generate Brief'}
+                </button>
+                <button className="btn-primary" onClick={onCreateMorningBriefReminder} disabled={!morningBrief || creatingReminderId === 'morning-brief'}>
+                  {creatingReminderId === 'morning-brief' ? <div className="spinner-sm" /> : 'Create 7AM Reminder'}
+                </button>
+              </div>
+            </div>
+            {morningBrief ? (
+              <div className="panel-stack">
+                <div className="brief-card">
+                  <h4>{morningBrief.headline}</h4>
+                  <p>{morningBrief.summary}</p>
+                </div>
+                <div className="bullet-panel">
+                  <h4>Priorities</h4>
+                  <ul className="checklist">
+                    {morningBrief.priorities.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+                <div className="bullet-panel">
+                  <h4>Risks</h4>
+                  <ul className="checklist">
+                    {morningBrief.risks.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+                <p className="panel-summary"><strong>Suggested focus:</strong> {morningBrief.suggestedFocus}</p>
+              </div>
+            ) : (
+              <p className="panel-empty">Generate the owner's morning brief, then turn it into a Google Calendar reminder event with email + popup notifications.</p>
+            )}
+          </div>
+        </section>
       )}
     </main>
   );

@@ -8,14 +8,16 @@ import {
 
 interface IntakeConnectCardProps {
   firmName: string;
+  compact?: boolean;
 }
 
-export default function IntakeConnectCard({ firmName }: IntakeConnectCardProps) {
+export default function IntakeConnectCard({ firmName, compact = false }: IntakeConnectCardProps) {
   const [loading, setLoading] = useState(true);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
+  const [expanded, setExpanded] = useState(!compact);
 
   useEffect(() => {
     let cancelled = false;
@@ -73,6 +75,42 @@ export default function IntakeConnectCard({ firmName }: IntakeConnectCardProps) 
     }
   }
 
+  if (compact && !expanded) {
+    return (
+      <section className="intake-compact">
+        <div className="intake-compact-left">
+          {loading ? (
+            <div className="spinner-sm" />
+          ) : connected ? (
+            <span className="intake-compact-dot intake-compact-dot-ok" />
+          ) : (
+            <span className="intake-compact-dot intake-compact-dot-off" />
+          )}
+          <span className="intake-compact-label">Client intake form</span>
+          <span className="intake-compact-status">
+            {loading ? 'checking…' : connected ? 'live' : 'not connected'}
+          </span>
+        </div>
+        <div className="intake-compact-right">
+          {!loading && connected && (
+            <button className="btn-secondary btn-xs" onClick={handleCopy}>
+              {copied ? 'Copied!' : 'Copy link'}
+            </button>
+          )}
+          {!loading && !connected && (
+            <button className="btn-primary btn-xs" onClick={handleConnect}>
+              Connect
+            </button>
+          )}
+          <button className="btn-link btn-xs" onClick={() => setExpanded(true)}>
+            Manage
+          </button>
+        </div>
+        {error && <div className="intake-connect-error">{error}</div>}
+      </section>
+    );
+  }
+
   return (
     <section className="intake-connect-card">
       <div className="intake-connect-head">
@@ -82,13 +120,20 @@ export default function IntakeConnectCard({ firmName }: IntakeConnectCardProps) 
             A public form for new clients. Share the link, embed on your site, or open it on a tablet.
           </p>
         </div>
-        {loading ? (
-          <div className="spinner-sm" />
-        ) : connected ? (
-          <span className="intake-connect-badge intake-connect-badge-ok">✓ Connected</span>
-        ) : (
-          <span className="intake-connect-badge intake-connect-badge-off">Not connected</span>
-        )}
+        <div className="intake-connect-head-right">
+          {loading ? (
+            <div className="spinner-sm" />
+          ) : connected ? (
+            <span className="intake-connect-badge intake-connect-badge-ok">✓ Connected</span>
+          ) : (
+            <span className="intake-connect-badge intake-connect-badge-off">Not connected</span>
+          )}
+          {compact && (
+            <button className="btn-link btn-xs" onClick={() => setExpanded(false)}>
+              Collapse
+            </button>
+          )}
+        </div>
       </div>
 
       {!loading && !connected && (

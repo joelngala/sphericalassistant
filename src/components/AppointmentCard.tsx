@@ -1,5 +1,5 @@
 import type { CalendarEvent, WorkflowStatus } from '../types.ts';
-import { formatEventTime, getWorkflowState, parseServiceType, getAttendeeEmails, getClientNameFromSummary } from '../lib/calendar.ts';
+import { formatEventTime, getWorkflowState, parseServiceType, getAttendeeEmails, getClientNameFromSummary, getEventDateTime } from '../lib/calendar.ts';
 
 interface AppointmentCardProps {
   event: CalendarEvent;
@@ -14,6 +14,20 @@ const STATUS_CONFIG: Record<WorkflowStatus, { label: string; className: string }
   'followed-up': { label: 'Followed Up', className: 'badge-followedup' },
 };
 
+type PrepTone = 'ready' | 'warn' | 'risk';
+function prepInfo(event: CalendarEvent): { label: string; tone: PrepTone } | null {
+  const start = getEventDateTime(event);
+  if (isNaN(start.getTime())) return null;
+  if (start.getTime() < Date.now()) return null;
+  const hasClient = (event.attendees || []).some((a) => !a.self);
+  const hasLocation = Boolean(event.location?.trim());
+  const hasNotes = Boolean(event.description?.trim());
+  if (!hasClient) return { label: 'no client', tone: 'risk' };
+  if (!hasLocation) return { label: 'no location', tone: 'warn' };
+  if (!hasNotes) return { label: 'no notes', tone: 'warn' };
+  return { label: 'ready', tone: 'ready' };
+}
+
 export default function AppointmentCard({ event, onClick }: AppointmentCardProps) {
   const workflow = getWorkflowState(event);
   const status = STATUS_CONFIG[workflow.status];
@@ -21,9 +35,13 @@ export default function AppointmentCard({ event, onClick }: AppointmentCardProps
   const clientName = getClientNameFromSummary(event.summary);
   const attendees = getAttendeeEmails(event);
   const time = formatEventTime(event);
+  const prep = prepInfo(event);
 
   return (
-    <button className="appointment-card" onClick={onClick}>
+    <button
+      className={`appointment-card ${prep ? `appointment-card-prep-${prep.tone}` : ''}`}
+      onClick={onClick}
+    >
       <div className="card-time">{time}</div>
       <div className="card-content">
         <div className="card-service">{serviceType}</div>
@@ -44,7 +62,10 @@ export default function AppointmentCard({ event, onClick }: AppointmentCardProps
           </div>
         )}
       </div>
-      <div className={`status-badge ${status.className}`}>{status.label}</div>
+      <div className="card-right">
+        {prep && <span className={`prep-badge prep-badge-${prep.tone}`}>{prep.label}</span>}
+        <div className={`status-badge ${status.className}`}>{status.label}</div>
+      </div>
     </button>
   );
 }
