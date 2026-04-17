@@ -3903,6 +3903,12 @@ select.intake-form-input {
   color: var(--text);
 }
 
+.billing-retainer-summary {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-top: -6px;
+}
+
 .billing-paused-banner {
   padding: 10px 12px;
   border-radius: var(--radius-sm);
@@ -4125,4 +4131,3 @@ select.intake-form-input {
   background: var(--success);
   box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.2);
 }
-

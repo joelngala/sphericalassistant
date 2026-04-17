@@ -1613,6 +1613,10 @@ async function createBillingCheckout(env, payload) {
     unit_amount: amountCents,
     currency,
     recurring,
+    metadata: {
+      sphericalEventId: eventId || '',
+      sphericalPriceType: 'recurring',
+    },
   });
 
   // 4. Optional one-time retainer price (billed alongside first subscription invoice).
@@ -1622,6 +1626,10 @@ async function createBillingCheckout(env, payload) {
       product: product.id,
       unit_amount: upfrontRetainerCents,
       currency,
+      metadata: {
+        sphericalEventId: eventId || '',
+        sphericalPriceType: 'retainer',
+      },
     });
     retainerPriceId = retainerPrice.id;
   }
@@ -1680,7 +1688,53 @@ async function getBillingSubscription(env, searchParams) {
   const invoicesPayload = await stripeRequest(env, 'GET', '/v1/invoices', {
     subscription: subId,
     limit: 10,
+    expand: ['data.lines.data.price'],
   });
+
+  const invoices = (invoicesPayload?.data || []).map((inv) => {
+    const lines = Array.isArray(inv?.lines?.data) ? inv.lines.data : [];
+    const retainerLine = lines.find((line) => {
+      const price = line?.price;
+      if (!price || typeof price !== 'object') return false;
+      return price.metadata?.sphericalPriceType === 'retainer';
+    });
+    const retainerAmount = Number.isFinite(retainerLine?.amount) ? retainerLine.amount : 0;
+    return {
+      id: inv.id,
+      amountPaid: inv.amount_paid,
+      amountDue: inv.amount_due,
+      currency: inv.currency,
+      status: inv.status, // paid | open | uncollectible | void | draft
+      includesRetainer: Boolean(retainerLine),
+      retainerAmount,
+      created: inv.created,
+      hostedInvoiceUrl: inv.hosted_invoice_url,
+      attempted: inv.attempted,
+      attemptCount: inv.attempt_count,
+      description: inv.description,
+    };
+  });
+
+  const retainerInvoices = invoices.filter((inv) => inv.includesRetainer && inv.retainerAmount > 0);
+  const retainerRequiredCents = retainerInvoices.reduce((max, inv) => Math.max(max, inv.retainerAmount), 0);
+  const retainerPaidCents = retainerInvoices
+    .filter((inv) => inv.status === 'paid')
+    .reduce((sum, inv) => sum + inv.retainerAmount, 0);
+  const retainerFailed = retainerInvoices.some((inv) => inv.status === 'uncollectible');
+  const retainerOpen = retainerInvoices.some((inv) => inv.status === 'open' || inv.status === 'draft');
+
+  let retainerStatus = 'not_required';
+  if (retainerRequiredCents > 0) {
+    if (retainerPaidCents >= retainerRequiredCents) {
+      retainerStatus = 'paid';
+    } else if (retainerFailed) {
+      retainerStatus = 'failed';
+    } else if (retainerOpen) {
+      retainerStatus = 'awaiting_payment';
+    } else {
+      retainerStatus = 'awaiting_payment';
+    }
+  }
 
   return {
     subscriptionId: subscription.id,
@@ -1690,18 +1744,12 @@ async function getBillingSubscription(env, searchParams) {
     cancelAt: subscription.cancel_at,
     pauseCollection: subscription.pause_collection?.behavior || null,
     latestInvoiceId: subscription.latest_invoice,
-    invoices: (invoicesPayload?.data || []).map((inv) => ({
-      id: inv.id,
-      amountPaid: inv.amount_paid,
-      amountDue: inv.amount_due,
-      currency: inv.currency,
-      status: inv.status, // paid | open | uncollectible | void | draft
-      created: inv.created,
-      hostedInvoiceUrl: inv.hosted_invoice_url,
-      attempted: inv.attempted,
-      attemptCount: inv.attempt_count,
-      description: inv.description,
-    })),
+    retainer: {
+      requiredCents: retainerRequiredCents,
+      paidCents: retainerPaidCents,
+      status: retainerStatus,
+    },
+    invoices,
   };
 }
 

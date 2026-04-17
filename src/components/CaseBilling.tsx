@@ -37,6 +37,7 @@ interface CaseBillingProps {
   onSimulateFailure: () => void;
   onRemove: () => void;
   onSync: () => void;
+  onDraftPaymentEmail: () => void;
 }
 
 function todayIso(): string {
@@ -67,6 +68,7 @@ export default function CaseBilling({
   onSimulateFailure,
   onRemove,
   onSync,
+  onDraftPaymentEmail,
 }: CaseBillingProps) {
   const [showSetup, setShowSetup] = useState(false);
   const [showAdjust, setShowAdjust] = useState(false);
@@ -95,6 +97,9 @@ export default function CaseBilling({
     .filter((i) => i.status === 'paid')
     .reduce((sum, i) => sum + i.amountCents, 0);
   const failedCount = plan.invoices.filter((i) => i.status === 'failed').length;
+  const retainerRequired = plan.retainerRequiredCents ?? plan.upfrontRetainerCents ?? 0;
+  const retainerPaid = plan.retainerPaidCents ?? 0;
+  const retainerStatus = plan.retainerStatus || (retainerRequired > 0 ? 'awaiting_payment' : 'not_required');
 
   return (
     <div className="billing-panel">
@@ -144,8 +149,24 @@ export default function CaseBilling({
           <Stat label="Failures" value={String(failedCount)} />
           <Stat label="Started" value={formatDate(plan.startDate)} />
         </div>
+        {retainerRequired > 0 && (
+          <div className="billing-retainer-summary">
+            <strong>Retainer:</strong>{' '}
+            {formatAmount(retainerPaid, plan.currency)} / {formatAmount(retainerRequired, plan.currency)} · {retainerLabel(retainerStatus)}
+          </div>
+        )}
 
         <div className="billing-actions">
+          {liveMode && plan.stripeCheckoutUrl && (
+            <button
+              className="btn-secondary btn-sm"
+              onClick={onDraftPaymentEmail}
+              disabled={!plan.clientEmail || !plan.clientEmail.includes('@')}
+              title={!plan.clientEmail || !plan.clientEmail.includes('@') ? 'Add a client email first' : undefined}
+            >
+              Draft payment email
+            </button>
+          )}
           {liveMode && plan.stripeSubscriptionId && (
             <button className="btn-secondary btn-sm" onClick={onSync} disabled={syncing}>
               {syncing ? 'Syncing…' : 'Sync from Stripe'}
@@ -265,6 +286,13 @@ function Stat({ label, value }: { label: string; value: string }) {
       <div className="billing-stat-value">{value}</div>
     </div>
   );
+}
+
+function retainerLabel(status: string): string {
+  if (status === 'paid') return 'Paid';
+  if (status === 'failed') return 'Payment failed';
+  if (status === 'awaiting_payment') return 'Awaiting payment';
+  return 'Not required';
 }
 
 function EmptyState({ liveMode, onStart }: { liveMode: boolean; onStart: () => void }) {

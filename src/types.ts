@@ -288,12 +288,15 @@ export type BillingStatus =
   | 'canceled';   // plan ended
 
 export type InvoiceStatus = 'paid' | 'open' | 'failed' | 'void';
+export type RetainerStatus = 'not_required' | 'awaiting_payment' | 'paid' | 'failed';
 
 export interface PaymentInvoice {
   id: string;
   amountCents: number;
   currency: string;
   status: InvoiceStatus;
+  includesRetainer?: boolean;
+  retainerAmountCents?: number;
   createdAt: string;
   paidAt?: string;
   failedAt?: string;
@@ -314,6 +317,9 @@ export interface PaymentPlan {
   currency: string;
   interval: BillingInterval;
   upfrontRetainerCents?: number;
+  retainerRequiredCents?: number;
+  retainerPaidCents?: number;
+  retainerStatus?: RetainerStatus;
   startDate: string;
   nextChargeDate?: string;
   status: BillingStatus;

@@ -14,6 +14,7 @@ import type {
   ContactFormData,
   AppointmentFormData,
   EmailPreferences,
+  BillingInterval,
 } from './types.ts';
 import { initAuth, requestToken, revokeToken } from './lib/auth.ts';
 import {
@@ -292,6 +293,13 @@ export default function App() {
     setShowPreferencesModal(false);
   }
 
+  function billingIntervalLabel(interval: BillingInterval): string {
+    if (interval === 'weekly') return 'weekly';
+    if (interval === 'biweekly') return 'every two weeks';
+    if (interval === 'quarterly') return 'quarterly';
+    return 'monthly';
+  }
+
   async function handleAnalyze() {
     if (!selectedEvent || !user) return;
     setAnalyzing(true);
@@ -429,6 +437,42 @@ export default function App() {
       setError(err instanceof Error ? err.message : 'Failed to draft task email');
       throw err;
     }
+  }
+
+  async function handleDraftBillingEmail(input: {
+    to: string;
+    clientName: string;
+    amountCents: number;
+    currency: string;
+    interval: BillingInterval;
+    checkoutUrl: string;
+    serviceType: string;
+    upfrontRetainerCents?: number;
+  }) {
+    const amount = `${input.currency.toUpperCase()} ${(input.amountCents / 100).toFixed(2)}`;
+    const retainerLine = input.upfrontRetainerCents
+      ? `\nUpfront retainer due at checkout: ${input.currency.toUpperCase()} ${(input.upfrontRetainerCents / 100).toFixed(2)}.`
+      : '';
+    const subject = `Payment link for ${input.serviceType}`;
+    const body = `Hi ${input.clientName},
+
+Here is your secure payment link:
+${input.checkoutUrl}
+
+Recurring payment plan: ${amount} ${billingIntervalLabel(input.interval)}.${retainerLine}
+
+Once payment is completed, we will receive confirmation and proceed.
+
+Best,
+${emailPreferences.senderName || user?.name || 'Your attorney'}
+${emailPreferences.businessName || ''}`.trim();
+
+    setDraftPreview({
+      to: input.to,
+      subject,
+      body,
+      actionId: 'billing-payment-link',
+    });
   }
 
   async function handleReviseAsset(assetType: 'doc' | 'slides', feedback: string) {
@@ -861,6 +905,7 @@ export default function App() {
             onCreateDoc={handleCreateDoc}
             onCreateSlides={handleCreateSlides}
             onDraftTaskEmail={handleTaskEmail}
+            onDraftBillingEmail={handleDraftBillingEmail}
             creatingDoc={creatingDoc}
             creatingSlides={creatingSlides}
             analysis={analysis}

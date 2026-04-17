@@ -9,6 +9,7 @@ import type {
   DocCategory,
   IndustryType,
   ActivityLogEntry,
+  BillingInterval,
 } from '../types.ts';
 import { formatEventTime, parseServiceType, getWorkflowState, getClientNameFromSummary, getLinkedDocuments, getEventDateTime } from '../lib/calendar.ts';
 import {
@@ -80,6 +81,16 @@ interface AppointmentDetailProps {
   onCreateDoc: (goal?: string) => Promise<void> | void;
   onCreateSlides: (goal?: string) => Promise<void> | void;
   onDraftTaskEmail: (goal: string, taskId: string) => Promise<void>;
+  onDraftBillingEmail: (input: {
+    to: string;
+    clientName: string;
+    amountCents: number;
+    currency: string;
+    interval: BillingInterval;
+    checkoutUrl: string;
+    serviceType: string;
+    upfrontRetainerCents?: number;
+  }) => Promise<void>;
   creatingDoc: boolean;
   creatingSlides: boolean;
   analysis: AppointmentAnalysis | null;
@@ -138,6 +149,7 @@ export default function AppointmentDetail({
   onCreateDoc,
   onCreateSlides,
   onDraftTaskEmail,
+  onDraftBillingEmail,
   creatingDoc,
   creatingSlides,
   analysis,
@@ -431,6 +443,35 @@ export default function AppointmentDetail({
       });
       const merged = mergeStripeSyncIntoPlan(current, sync);
       setPaymentPlan(event.id, merged);
+      const seenInvoiceIds = new Set(current.invoices.map((inv) => inv.id));
+      const newInvoices = merged.invoices.filter((inv) => !seenInvoiceIds.has(inv.id));
+      for (const invoice of newInvoices) {
+        if (invoice.status === 'paid') {
+          logActivity(
+            event.id,
+            'billing_payment_succeeded',
+            `Payment received: ${formatAmount(invoice.amountCents, invoice.currency)}`,
+            invoice.description,
+          );
+        } else if (invoice.status === 'failed') {
+          logActivity(
+            event.id,
+            'billing_payment_failed',
+            `Payment failed`,
+            invoice.description,
+          );
+        }
+      }
+      if (current.retainerStatus !== 'paid' && merged.retainerStatus === 'paid') {
+        logActivity(
+          event.id,
+          'billing_payment_succeeded',
+          'Upfront retainer paid',
+          merged.retainerRequiredCents
+            ? formatAmount(merged.retainerRequiredCents, merged.currency)
+            : undefined,
+        );
+      }
       logActivity(event.id, 'billing_plan_updated', 'Synced subscription from Stripe', `Status: ${merged.status}`);
       refreshCase();
     } catch (err) {
@@ -439,6 +480,33 @@ export default function AppointmentDetail({
     } finally {
       setBillingSyncing(false);
     }
+  }
+
+  async function handleDraftPaymentEmail() {
+    const plan = caseData.paymentPlan;
+    if (!plan?.stripeCheckoutUrl) return;
+    const recipient = (plan.clientEmail || attendeeEmail || '').trim();
+    if (!recipient || !recipient.includes('@')) {
+      alert('Add a valid client email first.');
+      return;
+    }
+    await onDraftBillingEmail({
+      to: recipient,
+      clientName: plan.clientName || clientName,
+      amountCents: plan.amountCents,
+      currency: plan.currency,
+      interval: plan.interval,
+      checkoutUrl: plan.stripeCheckoutUrl,
+      serviceType,
+      upfrontRetainerCents: plan.upfrontRetainerCents,
+    });
+    logActivity(
+      event.id,
+      'email_drafted',
+      'Billing payment link draft prepared',
+      `To: ${recipient}`,
+    );
+    refreshCase();
   }
 
   function handleAdjustPlan(input: {
@@ -902,6 +970,7 @@ export default function AppointmentDetail({
               onSimulateFailure={handleSimulateFailure}
               onRemove={handleRemovePlan}
               onSync={handleSyncPlan}
+              onDraftPaymentEmail={handleDraftPaymentEmail}
             />
           </div>
         )}

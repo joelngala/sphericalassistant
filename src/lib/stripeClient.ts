@@ -1,4 +1,10 @@
-import type { BillingInterval, BillingStatus, PaymentPlan, PaymentInvoice } from '../types.ts';
+import type {
+  BillingInterval,
+  BillingStatus,
+  PaymentPlan,
+  PaymentInvoice,
+  RetainerStatus,
+} from '../types.ts';
 import { intervalAdverb } from './billing.ts';
 
 const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim();
@@ -69,6 +75,8 @@ export interface RemoteInvoice {
   amountDue: number;
   currency: string;
   status: 'paid' | 'open' | 'uncollectible' | 'void' | 'draft';
+  includesRetainer?: boolean;
+  retainerAmount?: number;
   created: number;
   hostedInvoiceUrl: string | null;
   attempted: boolean;
@@ -87,6 +95,11 @@ export interface SubscriptionSync {
   invoices: RemoteInvoice[];
   checkoutStatus?: string;
   paymentStatus?: string;
+  retainer?: {
+    requiredCents: number;
+    paidCents: number;
+    status: RetainerStatus;
+  };
 }
 
 export async function syncSubscription(query: {
@@ -104,6 +117,13 @@ export async function performAction(input: {
   action: 'pause' | 'resume' | 'cancel';
 }): Promise<unknown> {
   return request<unknown>('POST', '/billing/action', input);
+}
+
+function normalizeRetainerStatus(status: string | undefined): RetainerStatus {
+  if (status === 'paid') return 'paid';
+  if (status === 'failed') return 'failed';
+  if (status === 'awaiting_payment') return 'awaiting_payment';
+  return 'not_required';
 }
 
 // Map Stripe subscription status → our internal BillingStatus enum.
@@ -138,17 +158,25 @@ export function mergeStripeSyncIntoPlan(plan: PaymentPlan, sync: SubscriptionSyn
   const mergedInvoices: PaymentInvoice[] = sync.invoices.map((inv) => {
     const paid = inv.status === 'paid';
     const failed = inv.status === 'open' || inv.status === 'uncollectible';
+    const includesRetainer = Boolean(inv.includesRetainer);
+    const retainerAmount = Number.isFinite(inv.retainerAmount) ? Number(inv.retainerAmount) : 0;
     return {
       id: inv.id,
       amountCents: paid ? inv.amountPaid : inv.amountDue,
       currency: inv.currency,
       status: paid ? 'paid' : failed ? 'failed' : inv.status === 'void' ? 'void' : 'open',
+      includesRetainer,
+      retainerAmountCents: includesRetainer ? retainerAmount : 0,
       createdAt: new Date(inv.created * 1000).toISOString(),
       paidAt: paid ? new Date(inv.created * 1000).toISOString() : undefined,
       failedAt: failed ? new Date(inv.created * 1000).toISOString() : undefined,
       description:
         inv.description ||
-        (paid ? `${intervalAdverb(plan.interval)} charge` : 'Payment attempt'),
+        (includesRetainer
+          ? `Retainer + ${intervalAdverb(plan.interval).toLowerCase()} charge`
+          : paid
+            ? `${intervalAdverb(plan.interval)} charge`
+            : 'Payment attempt'),
     };
   });
 
@@ -161,6 +189,17 @@ export function mergeStripeSyncIntoPlan(plan: PaymentPlan, sync: SubscriptionSyn
     stripeCustomerId: sync.customerId || plan.stripeCustomerId,
     status,
     failureCount: failedCount,
+    retainerRequiredCents:
+      sync.retainer?.requiredCents ??
+      plan.retainerRequiredCents ??
+      plan.upfrontRetainerCents ??
+      0,
+    retainerPaidCents: sync.retainer?.paidCents ?? plan.retainerPaidCents ?? 0,
+    retainerStatus: sync.retainer
+      ? normalizeRetainerStatus(sync.retainer.status)
+      : plan.upfrontRetainerCents
+        ? plan.retainerStatus || 'awaiting_payment'
+        : 'not_required',
     nextChargeDate: sync.currentPeriodEnd
       ? new Date(sync.currentPeriodEnd * 1000).toISOString()
       : plan.nextChargeDate,
