@@ -13,6 +13,9 @@ interface CaseBillingProps {
   plan: PaymentPlan | undefined;
   defaultClientName: string;
   defaultClientEmail: string;
+  liveMode: boolean;
+  creating: boolean;
+  syncing: boolean;
   onCreate: (input: {
     clientName: string;
     clientEmail: string;
@@ -33,6 +36,7 @@ interface CaseBillingProps {
   onSimulateSuccess: () => void;
   onSimulateFailure: () => void;
   onRemove: () => void;
+  onSync: () => void;
 }
 
 function todayIso(): string {
@@ -51,6 +55,9 @@ export default function CaseBilling({
   plan,
   defaultClientName,
   defaultClientEmail,
+  liveMode,
+  creating,
+  syncing,
   onCreate,
   onAdjust,
   onPause,
@@ -59,6 +66,7 @@ export default function CaseBilling({
   onSimulateSuccess,
   onSimulateFailure,
   onRemove,
+  onSync,
 }: CaseBillingProps) {
   const [showSetup, setShowSetup] = useState(false);
   const [showAdjust, setShowAdjust] = useState(false);
@@ -66,17 +74,17 @@ export default function CaseBilling({
   if (!plan) {
     return (
       <div className="billing-panel">
+        {liveMode && <LiveModeBadge />}
         {!showSetup ? (
-          <EmptyState onStart={() => setShowSetup(true)} />
+          <EmptyState liveMode={liveMode} onStart={() => setShowSetup(true)} />
         ) : (
           <SetupForm
             defaultClientName={defaultClientName}
             defaultClientEmail={defaultClientEmail}
+            liveMode={liveMode}
+            creating={creating}
             onCancel={() => setShowSetup(false)}
-            onCreate={(input) => {
-              onCreate(input);
-              setShowSetup(false);
-            }}
+            onCreate={onCreate}
           />
         )}
       </div>
@@ -90,6 +98,18 @@ export default function CaseBilling({
 
   return (
     <div className="billing-panel">
+      {liveMode && <LiveModeBadge />}
+
+      {liveMode && plan.stripeCheckoutUrl && plan.status === 'active' && plan.invoices.length === 0 && (
+        <div className="billing-pastdue-banner">
+          <strong>Awaiting first payment.</strong>{' '}
+          <a href={plan.stripeCheckoutUrl} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>
+            Reopen Stripe Checkout
+          </a>{' '}
+          or share the link with the client. Use card <code>4242 4242 4242 4242</code> in test mode.
+        </div>
+      )}
+
       <div className="billing-summary">
         <div className="billing-summary-top">
           <div>
@@ -126,11 +146,18 @@ export default function CaseBilling({
         </div>
 
         <div className="billing-actions">
+          {liveMode && plan.stripeSubscriptionId && (
+            <button className="btn-secondary btn-sm" onClick={onSync} disabled={syncing}>
+              {syncing ? 'Syncing…' : 'Sync from Stripe'}
+            </button>
+          )}
           {plan.status !== 'canceled' && (
             <>
-              <button className="btn-secondary btn-sm" onClick={() => setShowAdjust((s) => !s)}>
-                {showAdjust ? 'Close adjust' : 'Adjust plan'}
-              </button>
+              {!liveMode && (
+                <button className="btn-secondary btn-sm" onClick={() => setShowAdjust((s) => !s)}>
+                  {showAdjust ? 'Close adjust' : 'Adjust plan'}
+                </button>
+              )}
               {plan.status === 'paused' ? (
                 <button className="btn-primary btn-sm" onClick={onResume}>
                   Resume representation
@@ -164,7 +191,7 @@ export default function CaseBilling({
         )}
       </div>
 
-      {plan.status !== 'canceled' && (
+      {!liveMode && plan.status !== 'canceled' && (
         <div className="billing-simulate">
           <div className="billing-simulate-header">
             <span>Demo controls</span>
@@ -215,6 +242,15 @@ export default function CaseBilling({
   );
 }
 
+function LiveModeBadge() {
+  return (
+    <div className="billing-livemode-badge">
+      <span className="billing-livemode-dot" />
+      Stripe Test Mode — real Stripe API, fake cards
+    </div>
+  );
+}
+
 function invoiceBadgeCls(status: string): string {
   if (status === 'paid') return 'badge-confirmed';
   if (status === 'failed') return 'badge-reminded';
@@ -231,13 +267,14 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function EmptyState({ onStart }: { onStart: () => void }) {
+function EmptyState({ liveMode, onStart }: { liveMode: boolean; onStart: () => void }) {
   return (
     <div className="billing-empty">
       <h3>No payment plan yet</h3>
       <p className="text-muted">
-        Set up a custom Stripe subscription for this client. The plan adjusts per client — weekly, monthly, or
-        whatever fits the matter. If a payment fails, representation pauses automatically.
+        {liveMode
+          ? 'Set up a custom Stripe subscription for this client. We generate a real Stripe Checkout link and the client pays with test card 4242 4242 4242 4242. Subscription state syncs back from Stripe.'
+          : 'Set up a custom Stripe subscription for this client. The plan adjusts per client — weekly, monthly, or whatever fits the matter. If a payment fails, representation pauses automatically.'}
       </p>
       <button className="btn-primary" onClick={onStart}>
         Set up payment plan
@@ -249,11 +286,15 @@ function EmptyState({ onStart }: { onStart: () => void }) {
 function SetupForm({
   defaultClientName,
   defaultClientEmail,
+  liveMode,
+  creating,
   onCancel,
   onCreate,
 }: {
   defaultClientName: string;
   defaultClientEmail: string;
+  liveMode: boolean;
+  creating: boolean;
   onCancel: () => void;
   onCreate: (input: {
     clientName: string;
@@ -368,11 +409,11 @@ function SetupForm({
       </label>
 
       <div className="billing-form-actions">
-        <button type="button" className="btn-secondary btn-sm" onClick={onCancel}>
+        <button type="button" className="btn-secondary btn-sm" onClick={onCancel} disabled={creating}>
           Cancel
         </button>
-        <button type="submit" className="btn-primary btn-sm" disabled={!valid}>
-          Create plan
+        <button type="submit" className="btn-primary btn-sm" disabled={!valid || creating}>
+          {creating ? 'Creating…' : liveMode ? 'Create plan & send payment link' : 'Create plan'}
         </button>
       </div>
     </form>

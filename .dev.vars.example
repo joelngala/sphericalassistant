@@ -1,4 +1,5 @@
 GEMINI_API_KEY=your-gemini-key
+STRIPE_SECRET_KEY=sk_test_your_secret_key
 
 # Google OAuth (Web application type) — used by the intake form to create
 # calendar events on the owner's behalf via the offline/refresh-token flow.

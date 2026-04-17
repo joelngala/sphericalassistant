@@ -302,9 +302,12 @@ export interface PaymentInvoice {
 
 export interface PaymentPlan {
   id: string;
+  liveMode?: boolean;
   stripeCustomerId?: string;
   stripeSubscriptionId?: string;
   stripePriceId?: string;
+  stripeSessionId?: string;
+  stripeCheckoutUrl?: string;
   clientName: string;
   clientEmail: string;
   amountCents: number;

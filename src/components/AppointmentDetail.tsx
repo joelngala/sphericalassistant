@@ -43,6 +43,13 @@ import {
   statusCls,
   FAILURE_PAUSE_THRESHOLD,
 } from '../lib/billing.ts';
+import {
+  isStripeLiveMode,
+  createCheckoutSession,
+  syncSubscription,
+  performAction,
+  mergeStripeSyncIntoPlan,
+} from '../lib/stripeClient.ts';
 import { parseDocument } from '../lib/parseDocument.ts';
 import { generateCaseSummaryPdf } from '../lib/generatePdf.ts';
 import { sendCaseChat, categorizeDocument, suggestTasks } from '../lib/gemini.ts';
@@ -153,6 +160,9 @@ export default function AppointmentDetail({
   const [suggesting, setSuggesting] = useState(false);
   const [chatPrefill, setChatPrefill] = useState('');
   const [chatRevisionTarget, setChatRevisionTarget] = useState<'doc' | 'slides' | null>(null);
+  const [billingCreating, setBillingCreating] = useState(false);
+  const [billingSyncing, setBillingSyncing] = useState(false);
+  const liveBilling = isStripeLiveMode();
 
   const workflow = getWorkflowState(event);
   const serviceType = parseServiceType(event.summary);
@@ -347,7 +357,7 @@ export default function AppointmentDetail({
   }
 
   // --- Billing ---
-  function handleCreatePlan(input: {
+  async function handleCreatePlan(input: {
     clientName: string;
     clientEmail: string;
     amountCents: number;
@@ -356,6 +366,51 @@ export default function AppointmentDetail({
     upfrontRetainerCents?: number;
     notes?: string;
   }) {
+    if (liveBilling) {
+      setBillingCreating(true);
+      try {
+        const session = await createCheckoutSession({
+          clientName: input.clientName,
+          clientEmail: input.clientEmail,
+          amountCents: input.amountCents,
+          interval: input.interval,
+          upfrontRetainerCents: input.upfrontRetainerCents,
+          eventId: event.id,
+          notes: input.notes,
+          successUrl: `${window.location.origin}${window.location.pathname}?billing=success`,
+          cancelUrl: `${window.location.origin}${window.location.pathname}?billing=canceled`,
+        });
+
+        const base = createMockPlan(input);
+        const livePlan = {
+          ...base,
+          liveMode: true,
+          stripeCustomerId: session.customerId,
+          stripeSessionId: session.sessionId,
+          stripeCheckoutUrl: session.checkoutUrl,
+          stripePriceId: session.priceId,
+          stripeSubscriptionId: undefined,
+          invoices: [],
+          upfrontRetainerCents: input.upfrontRetainerCents,
+        };
+        setPaymentPlan(event.id, livePlan);
+        logActivity(
+          event.id,
+          'billing_plan_created',
+          `Payment plan created for ${input.clientName}`,
+          `Live Stripe Checkout: ${formatAmount(input.amountCents)} ${intervalAdverb(input.interval).toLowerCase()}`,
+        );
+        refreshCase();
+        window.open(session.checkoutUrl, '_blank', 'noopener,noreferrer');
+      } catch (err) {
+        console.error('Stripe checkout failed:', err);
+        alert(`Stripe checkout failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+      } finally {
+        setBillingCreating(false);
+      }
+      return;
+    }
+
     const plan = createMockPlan(input);
     setPaymentPlan(event.id, plan);
     const detail = `${formatAmount(plan.amountCents, plan.currency)} ${intervalAdverb(plan.interval).toLowerCase()}${
@@ -363,6 +418,27 @@ export default function AppointmentDetail({
     }`;
     logActivity(event.id, 'billing_plan_created', `Payment plan created for ${plan.clientName}`, detail);
     refreshCase();
+  }
+
+  async function handleSyncPlan() {
+    const current = caseData.paymentPlan;
+    if (!current || !liveBilling) return;
+    setBillingSyncing(true);
+    try {
+      const sync = await syncSubscription({
+        sessionId: current.stripeSessionId,
+        subscriptionId: current.stripeSubscriptionId,
+      });
+      const merged = mergeStripeSyncIntoPlan(current, sync);
+      setPaymentPlan(event.id, merged);
+      logActivity(event.id, 'billing_plan_updated', 'Synced subscription from Stripe', `Status: ${merged.status}`);
+      refreshCase();
+    } catch (err) {
+      console.error('Stripe sync failed:', err);
+      alert(`Stripe sync failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+    } finally {
+      setBillingSyncing(false);
+    }
   }
 
   function handleAdjustPlan(input: {
@@ -380,26 +456,50 @@ export default function AppointmentDetail({
     refreshCase();
   }
 
-  function handlePausePlan() {
-    if (!caseData.paymentPlan) return;
-    const updated = pausePlan(caseData.paymentPlan);
-    setPaymentPlan(event.id, updated);
-    logActivity(event.id, 'billing_plan_paused', 'Representation paused', 'Manual pause by attorney');
+  async function handlePausePlan() {
+    const plan = caseData.paymentPlan;
+    if (!plan) return;
+    if (liveBilling && plan.stripeSubscriptionId) {
+      try {
+        await performAction({ subscriptionId: plan.stripeSubscriptionId, action: 'pause' });
+      } catch (err) {
+        alert(`Stripe pause failed: ${err instanceof Error ? err.message : 'unknown'}`);
+        return;
+      }
+    }
+    setPaymentPlan(event.id, pausePlan(plan));
+    logActivity(event.id, 'billing_plan_paused', 'Representation paused', liveBilling ? 'Stripe collection paused' : 'Manual pause by attorney');
     refreshCase();
   }
 
-  function handleResumePlan() {
-    if (!caseData.paymentPlan) return;
-    const updated = resumePlan(caseData.paymentPlan);
-    setPaymentPlan(event.id, updated);
+  async function handleResumePlan() {
+    const plan = caseData.paymentPlan;
+    if (!plan) return;
+    if (liveBilling && plan.stripeSubscriptionId) {
+      try {
+        await performAction({ subscriptionId: plan.stripeSubscriptionId, action: 'resume' });
+      } catch (err) {
+        alert(`Stripe resume failed: ${err instanceof Error ? err.message : 'unknown'}`);
+        return;
+      }
+    }
+    setPaymentPlan(event.id, resumePlan(plan));
     logActivity(event.id, 'billing_plan_resumed', 'Representation resumed');
     refreshCase();
   }
 
-  function handleCancelPlan() {
-    if (!caseData.paymentPlan) return;
-    const updated = cancelPlan(caseData.paymentPlan);
-    setPaymentPlan(event.id, updated);
+  async function handleCancelPlan() {
+    const plan = caseData.paymentPlan;
+    if (!plan) return;
+    if (liveBilling && plan.stripeSubscriptionId) {
+      try {
+        await performAction({ subscriptionId: plan.stripeSubscriptionId, action: 'cancel' });
+      } catch (err) {
+        alert(`Stripe cancel failed: ${err instanceof Error ? err.message : 'unknown'}`);
+        return;
+      }
+    }
+    setPaymentPlan(event.id, cancelPlan(plan));
     logActivity(event.id, 'billing_plan_canceled', 'Payment plan canceled');
     refreshCase();
   }
@@ -790,6 +890,9 @@ export default function AppointmentDetail({
               plan={caseData.paymentPlan}
               defaultClientName={clientName}
               defaultClientEmail={attendeeEmail}
+              liveMode={liveBilling}
+              creating={billingCreating}
+              syncing={billingSyncing}
               onCreate={handleCreatePlan}
               onAdjust={handleAdjustPlan}
               onPause={handlePausePlan}
@@ -798,6 +901,7 @@ export default function AppointmentDetail({
               onSimulateSuccess={handleSimulateSuccess}
               onSimulateFailure={handleSimulateFailure}
               onRemove={handleRemovePlan}
+              onSync={handleSyncPlan}
             />
           </div>
         )}

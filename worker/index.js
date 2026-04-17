@@ -30,10 +30,22 @@ export default {
 
     if (request.method === 'GET' && url.pathname === '/health') {
       return jsonResponse(
-        { ok: true, configured: Boolean(env.GEMINI_API_KEY) },
+        { ok: true, configured: Boolean(env.GEMINI_API_KEY), stripe: Boolean(env.STRIPE_SECRET_KEY) },
         200,
         allowedOrigin
       );
+    }
+
+    // Read-only billing sync runs as GET and doesn't need GEMINI_API_KEY.
+    if (request.method === 'GET' && url.pathname === '/billing/subscription') {
+      if (!allowedOrigin) return jsonResponse({ error: 'Origin not allowed' }, 403, null);
+      try {
+        const result = await getBillingSubscription(env, url.searchParams);
+        return jsonResponse(result, 200, allowedOrigin);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Billing sync failed';
+        return jsonResponse({ error: message }, 500, allowedOrigin);
+      }
     }
 
     if (!allowedOrigin) {
@@ -42,6 +54,23 @@ export default {
 
     if (request.method !== 'POST') {
       return jsonResponse({ error: 'Method not allowed' }, 405, allowedOrigin);
+    }
+
+    // Billing endpoints are gated on STRIPE_SECRET_KEY, not GEMINI_API_KEY —
+    // let them through even when the AI key isn't configured.
+    if (url.pathname === '/billing/checkout' || url.pathname === '/billing/action') {
+      try {
+        const body = await request.json();
+        if (url.pathname === '/billing/checkout') {
+          const result = await createBillingCheckout(env, body);
+          return jsonResponse(result, 200, allowedOrigin);
+        }
+        const result = await billingAction(env, body);
+        return jsonResponse(result, 200, allowedOrigin);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Billing request failed';
+        return jsonResponse({ error: message }, 500, allowedOrigin);
+      }
     }
 
     if (!env.GEMINI_API_KEY) {
@@ -1473,4 +1502,224 @@ Return ONLY a JSON array of task strings, e.g. ["Confirm meeting time", "Draft a
   } catch {
     return { tasks: [] };
   }
+}
+
+// --- Stripe billing (test-mode subscription checkout) ---
+
+const STRIPE_INTERVAL_MAP = {
+  weekly: { interval: 'week', interval_count: 1 },
+  biweekly: { interval: 'week', interval_count: 2 },
+  monthly: { interval: 'month', interval_count: 1 },
+  quarterly: { interval: 'month', interval_count: 3 },
+};
+
+async function stripeRequest(env, method, path, params) {
+  if (!env.STRIPE_SECRET_KEY) {
+    throw new Error('Worker secret STRIPE_SECRET_KEY is not set');
+  }
+
+  const init = {
+    method,
+    headers: {
+      Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`,
+    },
+  };
+
+  let url = `https://api.stripe.com${path}`;
+  if (params && Object.keys(params).length > 0) {
+    const body = encodeStripeForm(params);
+    if (method === 'GET') {
+      url += `?${body}`;
+    } else {
+      init.body = body;
+      init.headers['Content-Type'] = 'application/x-www-form-urlencoded';
+    }
+  }
+
+  const response = await fetch(url, init);
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message = payload?.error?.message || `Stripe ${response.status}`;
+    throw new Error(message);
+  }
+  return payload;
+}
+
+function encodeStripeForm(obj, prefix) {
+  const parts = [];
+  for (const [key, value] of Object.entries(obj)) {
+    // Keep empty-string values so callers can explicitly unset Stripe fields
+    // (for example: pause_collection="").
+    if (value === undefined || value === null) continue;
+    const fieldName = prefix ? `${prefix}[${key}]` : key;
+    if (Array.isArray(value)) {
+      value.forEach((item, i) => {
+        if (item && typeof item === 'object') {
+          parts.push(encodeStripeForm(item, `${fieldName}[${i}]`));
+        } else {
+          parts.push(`${encodeURIComponent(`${fieldName}[${i}]`)}=${encodeURIComponent(String(item))}`);
+        }
+      });
+    } else if (typeof value === 'object') {
+      parts.push(encodeStripeForm(value, fieldName));
+    } else {
+      parts.push(`${encodeURIComponent(fieldName)}=${encodeURIComponent(String(value))}`);
+    }
+  }
+  return parts.filter(Boolean).join('&');
+}
+
+async function createBillingCheckout(env, payload) {
+  const {
+    clientName,
+    clientEmail,
+    amountCents,
+    currency = 'usd',
+    interval,
+    upfrontRetainerCents,
+    eventId,
+    successUrl,
+    cancelUrl,
+    notes,
+  } = payload || {};
+
+  if (!clientName) throw new Error('clientName is required');
+  if (!Number.isFinite(amountCents) || amountCents <= 0) {
+    throw new Error('amountCents must be a positive integer');
+  }
+  const recurring = STRIPE_INTERVAL_MAP[interval];
+  if (!recurring) throw new Error(`Unsupported interval: ${interval}`);
+
+  // 1. Create customer (Stripe dedupes by email on its end — no local cache needed for demo)
+  const customer = await stripeRequest(env, 'POST', '/v1/customers', {
+    name: clientName,
+    email: clientEmail || undefined,
+    metadata: {
+      sphericalEventId: eventId || '',
+      sphericalNotes: (notes || '').slice(0, 450),
+    },
+  });
+
+  // 2. Create a dedicated product for this client's retainer so Stripe records
+  //    per-client billing cleanly in the dashboard.
+  const product = await stripeRequest(env, 'POST', '/v1/products', {
+    name: `Retainer — ${clientName}`,
+    metadata: { sphericalEventId: eventId || '' },
+  });
+
+  // 3. Recurring price for the subscription.
+  const price = await stripeRequest(env, 'POST', '/v1/prices', {
+    product: product.id,
+    unit_amount: amountCents,
+    currency,
+    recurring,
+  });
+
+  // 4. Optional one-time retainer price (billed alongside first subscription invoice).
+  let retainerPriceId;
+  if (Number.isFinite(upfrontRetainerCents) && upfrontRetainerCents > 0) {
+    const retainerPrice = await stripeRequest(env, 'POST', '/v1/prices', {
+      product: product.id,
+      unit_amount: upfrontRetainerCents,
+      currency,
+    });
+    retainerPriceId = retainerPrice.id;
+  }
+
+  const lineItems = [{ price: price.id, quantity: 1 }];
+  if (retainerPriceId) lineItems.push({ price: retainerPriceId, quantity: 1 });
+
+  // 5. Hosted Checkout session in subscription mode.
+  const session = await stripeRequest(env, 'POST', '/v1/checkout/sessions', {
+    mode: 'subscription',
+    customer: customer.id,
+    line_items: lineItems,
+    success_url: successUrl || 'https://joelngala.github.io/sphericalassistant/?billing=success',
+    cancel_url: cancelUrl || 'https://joelngala.github.io/sphericalassistant/?billing=canceled',
+    metadata: { sphericalEventId: eventId || '' },
+  });
+
+  return {
+    checkoutUrl: session.url,
+    sessionId: session.id,
+    customerId: customer.id,
+    productId: product.id,
+    priceId: price.id,
+    retainerPriceId: retainerPriceId || null,
+  };
+}
+
+async function getBillingSubscription(env, searchParams) {
+  const sessionId = searchParams.get('session_id');
+  const subscriptionId = searchParams.get('subscription_id');
+  const customerId = searchParams.get('customer_id');
+
+  let subId = subscriptionId;
+
+  // If the caller only has the Checkout session ID (the common case before first
+  // payment completes), resolve the subscription from there.
+  if (!subId && sessionId) {
+    const session = await stripeRequest(env, 'GET', `/v1/checkout/sessions/${sessionId}`);
+    subId = typeof session.subscription === 'string' ? session.subscription : session.subscription?.id;
+    if (!subId) {
+      return {
+        status: session.payment_status === 'paid' ? 'processing' : 'awaiting_payment',
+        checkoutStatus: session.status,
+        paymentStatus: session.payment_status,
+        subscriptionId: null,
+        customerId: typeof session.customer === 'string' ? session.customer : session.customer?.id,
+        invoices: [],
+      };
+    }
+  }
+
+  if (!subId) throw new Error('Provide session_id, subscription_id, or customer_id');
+
+  const subscription = await stripeRequest(env, 'GET', `/v1/subscriptions/${subId}`);
+
+  const invoicesPayload = await stripeRequest(env, 'GET', '/v1/invoices', {
+    subscription: subId,
+    limit: 10,
+  });
+
+  return {
+    subscriptionId: subscription.id,
+    customerId: typeof subscription.customer === 'string' ? subscription.customer : subscription.customer?.id,
+    status: subscription.status, // active | past_due | canceled | unpaid | incomplete | trialing | paused
+    currentPeriodEnd: subscription.current_period_end,
+    cancelAt: subscription.cancel_at,
+    pauseCollection: subscription.pause_collection?.behavior || null,
+    latestInvoiceId: subscription.latest_invoice,
+    invoices: (invoicesPayload?.data || []).map((inv) => ({
+      id: inv.id,
+      amountPaid: inv.amount_paid,
+      amountDue: inv.amount_due,
+      currency: inv.currency,
+      status: inv.status, // paid | open | uncollectible | void | draft
+      created: inv.created,
+      hostedInvoiceUrl: inv.hosted_invoice_url,
+      attempted: inv.attempted,
+      attemptCount: inv.attempt_count,
+      description: inv.description,
+    })),
+  };
+}
+
+async function billingAction(env, payload) {
+  const { action, subscriptionId } = payload || {};
+  if (!subscriptionId) throw new Error('subscriptionId required');
+  if (action === 'cancel') {
+    return stripeRequest(env, 'DELETE', `/v1/subscriptions/${subscriptionId}`);
+  }
+  if (action === 'pause') {
+    return stripeRequest(env, 'POST', `/v1/subscriptions/${subscriptionId}`, {
+      pause_collection: { behavior: 'mark_uncollectible' },
+    });
+  }
+  if (action === 'resume') {
+    return stripeRequest(env, 'POST', `/v1/subscriptions/${subscriptionId}`, {
+      pause_collection: '',
+    });
+  }
+  throw new Error(`Unknown billing action: ${action}`);
 }
