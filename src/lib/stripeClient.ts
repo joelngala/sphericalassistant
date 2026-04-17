@@ -2,6 +2,7 @@ import type { BillingInterval, BillingStatus, PaymentPlan, PaymentInvoice } from
 import { intervalAdverb } from './billing.ts';
 
 const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim();
+const defaultProdApiBaseUrl = 'https://spherical-assistant-proxy.spherelabsai.workers.dev';
 
 function getApiBaseUrl(): string {
   if (configuredApiBaseUrl) {
@@ -10,12 +11,11 @@ function getApiBaseUrl(): string {
   if (import.meta.env.DEV) {
     return 'http://127.0.0.1:8787';
   }
-  return '';
+  return defaultProdApiBaseUrl;
 }
 
 export function isStripeLiveMode(): boolean {
-  const pk = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY?.trim();
-  return Boolean(pk) && getApiBaseUrl().length > 0;
+  return getApiBaseUrl().length > 0;
 }
 
 async function request<T>(

@@ -8,11 +8,12 @@ Create/update `.env`:
 
 ```bash
 VITE_API_BASE_URL=https://<your-worker>.workers.dev
-VITE_STRIPE_PUBLISHABLE_KEY=pk_test_...
 VITE_GOOGLE_CLIENT_ID=...
 ```
 
-`VITE_STRIPE_PUBLISHABLE_KEY` enables live billing mode in the Billing tab.
+If `VITE_API_BASE_URL` is omitted in production, the app falls back to:
+
+`https://spherical-assistant-proxy.spherelabsai.workers.dev`
 
 ## 2) Worker secret
 
@@ -22,7 +23,7 @@ Set Stripe secret on the Cloudflare Worker:
 npx wrangler secret put STRIPE_SECRET_KEY
 ```
 
-Paste your `sk_test_...` key when prompted.
+Paste your `sk_test_...` key when prompted. Do not commit `sk_*` into git.
 
 ## 3) Run locally
 
