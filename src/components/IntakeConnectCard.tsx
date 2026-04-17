@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
+  disconnectIntake,
   fetchIntakeConnectionStatus,
   getIntakeUrl,
   startOfflineConsent,
@@ -14,6 +15,7 @@ export default function IntakeConnectCard({ firmName }: IntakeConnectCardProps) 
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -42,6 +44,25 @@ export default function IntakeConnectCard({ firmName }: IntakeConnectCardProps) 
     }
   }
 
+  async function handleDisconnect() {
+    if (disconnecting) return;
+    const confirmed = window.confirm(
+      'Disconnect intake from your calendar? New intakes will stop creating calendar events until you reconnect.'
+    );
+    if (!confirmed) return;
+
+    setDisconnecting(true);
+    setError('');
+    try {
+      await disconnectIntake();
+      setConnected(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not disconnect intake');
+    } finally {
+      setDisconnecting(false);
+    }
+  }
+
   async function handleCopy() {
     try {
       await navigator.clipboard.writeText(intakeUrl);
@@ -56,9 +77,9 @@ export default function IntakeConnectCard({ firmName }: IntakeConnectCardProps) 
     <section className="intake-connect-card">
       <div className="intake-connect-head">
         <div>
-          <h3>Legal Intake Chatbot</h3>
+          <h3>Client Intake Form</h3>
           <p className="subtitle">
-            A public chatbot that turns website visitors into calendar leads automatically.
+            A public form for new clients. Share the link, embed on your site, or open it on a tablet.
           </p>
         </div>
         {loading ? (
@@ -97,6 +118,12 @@ export default function IntakeConnectCard({ firmName }: IntakeConnectCardProps) 
             New intakes will appear on your calendar as yellow "New Lead" events
             that don't block your time. Urgent intakes show in red.
           </p>
+          <button className="btn-link" onClick={handleConnect}>
+            Reconnect
+          </button>
+          <button className="btn-link" onClick={handleDisconnect} disabled={disconnecting}>
+            {disconnecting ? 'Disconnecting…' : 'Disconnect'}
+          </button>
         </>
       )}
 

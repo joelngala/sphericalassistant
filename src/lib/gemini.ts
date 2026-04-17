@@ -4,10 +4,15 @@ import type {
   AppointmentAnalysis,
   CalendarEvent,
   ClientContact,
+  SlidesDeckOutline,
+  GoogleDocOutline,
   DraftPreviewData,
   EmailDraft,
   EmailPreferences,
   EstimateResult,
+  CaseDocument,
+  CaseChatMessage,
+  IndustryType,
 } from '../types.ts';
 
 const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim();
@@ -208,5 +213,153 @@ export async function generateMorningBrief(
       })),
     })),
     preferences,
+  });
+}
+
+// --- Case management API ---
+
+export async function sendCaseChat(
+  message: string,
+  history: CaseChatMessage[],
+  documents: CaseDocument[],
+  caseContext: { title: string; clientName: string; pendingTasks: number },
+  industry: IndustryType,
+): Promise<string> {
+  const res = await postJson<{ reply: string }>('/case-chat', {
+    message,
+    history: history.map((m) => ({ role: m.role, text: m.text })),
+    documents: documents.map((d) => ({ name: d.name, category: d.category, textContent: d.textContent })),
+    caseContext,
+    industry,
+  });
+  return res.reply;
+}
+
+export async function categorizeDocument(
+  fileName: string,
+  textPreview: string,
+  industry: IndustryType,
+): Promise<string> {
+  const res = await postJson<{ category: string }>('/categorize-document', {
+    fileName,
+    textPreview,
+    industry,
+  });
+  return res.category;
+}
+
+export async function suggestTasks(
+  caseTitle: string,
+  caseDescription: string,
+  industry: IndustryType,
+  existingTasks: string[],
+): Promise<string[]> {
+  const res = await postJson<{ tasks: string[] }>('/suggest-tasks', {
+    caseTitle,
+    caseDescription,
+    industry,
+    existingTasks,
+  });
+  return res.tasks;
+}
+
+export interface OutlineCaseContext {
+  industry: IndustryType;
+  tasks?: { label: string; done: boolean }[];
+  documents?: { name: string; category: string; textContent: string }[];
+}
+
+export async function generateSlidesOutline(
+  event: CalendarEvent,
+  client: ClientContact | null,
+  analysis: AppointmentAnalysis | null,
+  caseContext: OutlineCaseContext,
+  preferences?: EmailPreferences,
+  feedback?: string,
+): Promise<SlidesDeckOutline> {
+  return postJson<SlidesDeckOutline>('/slides-outline', {
+    appointment: {
+      summary: event.summary,
+      start: event.start.dateTime || event.start.date,
+      end: event.end.dateTime || event.end.date,
+      location: event.location,
+      description: event.description,
+    },
+    client: client
+      ? {
+          name: client.name,
+          email: client.email,
+          phone: client.phone,
+          address: client.address,
+          organization: client.organization,
+          notes: client.notes,
+        }
+      : { name: 'Client' },
+    analysis,
+    caseContext,
+    businessContext: buildBusinessContext(preferences),
+    feedback,
+  });
+}
+
+export async function generateTaskEmailDraft(
+  taskGoal: string,
+  event: CalendarEvent,
+  client: ClientContact | null,
+  preferences?: EmailPreferences,
+): Promise<EmailDraft> {
+  return postJson<EmailDraft>('/task-email', {
+    taskGoal,
+    appointment: {
+      summary: event.summary,
+      start: event.start.dateTime || event.start.date,
+      end: event.end.dateTime || event.end.date,
+      location: event.location,
+      description: event.description,
+    },
+    client: client
+      ? {
+          name: client.name,
+          email: client.email,
+          phone: client.phone,
+          address: client.address,
+          organization: client.organization,
+          notes: client.notes,
+        }
+      : { name: 'Client', email: '' },
+    businessContext: buildBusinessContext(preferences),
+  });
+}
+
+export async function generateDocOutline(
+  event: CalendarEvent,
+  client: ClientContact | null,
+  analysis: AppointmentAnalysis | null,
+  caseContext: OutlineCaseContext,
+  preferences?: EmailPreferences,
+  feedback?: string,
+): Promise<GoogleDocOutline> {
+  return postJson<GoogleDocOutline>('/doc-outline', {
+    appointment: {
+      summary: event.summary,
+      start: event.start.dateTime || event.start.date,
+      end: event.end.dateTime || event.end.date,
+      location: event.location,
+      description: event.description,
+    },
+    client: client
+      ? {
+          name: client.name,
+          email: client.email,
+          phone: client.phone,
+          address: client.address,
+          organization: client.organization,
+          notes: client.notes,
+        }
+      : { name: 'Client' },
+    analysis,
+    caseContext,
+    businessContext: buildBusinessContext(preferences),
+    feedback,
   });
 }

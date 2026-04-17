@@ -1,5 +1,5 @@
 import type { AssistantActionItem, BusinessInsights, CalendarEvent, MorningBrief } from '../types.ts';
-import { groupEventsByDate } from '../lib/calendar.ts';
+import { groupEventsByDate, getEventDateTime } from '../lib/calendar.ts';
 import AppointmentCard from './AppointmentCard.tsx';
 import IntakeConnectCard from './IntakeConnectCard.tsx';
 
@@ -44,9 +44,8 @@ export default function Dashboard({
   const appointmentsMissingClient = events.filter((event) => !event.attendees?.some((attendee) => !attendee.self)).length;
   const appointmentsMissingLocation = events.filter((event) => !event.location?.trim()).length;
   const upcomingSoon = events.filter((event) => {
-    const start = event.start.dateTime || event.start.date;
-    if (!start) return false;
-    const startDate = new Date(start);
+    const startDate = getEventDateTime(event);
+    if (isNaN(startDate.getTime())) return false;
     const now = new Date();
     return startDate > now && startDate.getTime() - now.getTime() <= 24 * 60 * 60 * 1000;
   }).length;

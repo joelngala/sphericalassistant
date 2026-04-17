@@ -10,9 +10,9 @@ export function getIntakeCallbackUri(): string {
   return `${origin}${pathname}?page=oauth-callback`;
 }
 
-export function getIntakeUrl(firmName: string): string {
+export function getIntakeUrl(firmName: string, mode: 'form' | 'chat' = 'form'): string {
   const { origin, pathname } = window.location;
-  const params = new URLSearchParams({ page: 'intake', firm: firmName });
+  const params = new URLSearchParams({ page: 'intake', firm: firmName, mode });
   return `${origin}${pathname}?${params.toString()}`;
 }
 
@@ -63,4 +63,17 @@ export async function fetchIntakeConnectionStatus(): Promise<IntakeConnectionSta
   }
   const data = await response.json();
   return { connected: Boolean(data.connected) };
+}
+
+export async function disconnectIntake(): Promise<void> {
+  const workerUrl = import.meta.env.VITE_API_BASE_URL;
+  const response = await fetch(`${workerUrl}/oauth/disconnect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    throw new Error(payload?.error || `Disconnect failed (${response.status})`);
+  }
 }

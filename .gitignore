@@ -17,3 +17,9 @@ dist/
 *.swp
 *.swo
 .DS_Store
+
+# Sibling project (separate repo)
+SphericalAnalyzer/
+
+# Claude agent memory (local-only)
+memory/

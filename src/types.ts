@@ -43,6 +43,30 @@ export interface AppointmentAnalysis {
   suggestedActions: SuggestedAction[];
 }
 
+export interface SlidesDeckSlide {
+  title: string;
+  bullets: string[];
+  speakerNotes?: string;
+}
+
+export interface SlidesDeckOutline {
+  title: string;
+  subtitle?: string;
+  slides: SlidesDeckSlide[];
+}
+
+export interface GoogleDocSection {
+  heading: string;
+  bullets: string[];
+}
+
+export interface GoogleDocOutline {
+  title: string;
+  subtitle?: string;
+  executiveSummary?: string;
+  sections: GoogleDocSection[];
+}
+
 export interface SuggestedAction {
   id: string;
   type: 'confirm' | 'reminder' | 'followup' | 'estimate' | 'contact' | 'custom';
@@ -159,4 +183,87 @@ export interface AssistantReminderData {
   eventId?: string;
   title: string;
   detail: string;
+}
+
+// --- Case Management ---
+
+export type IndustryType = 'legal' | 'realestate' | 'general';
+
+export interface CaseTask {
+  id: string;
+  label: string;
+  done: boolean;
+  createdAt: string;
+  completedAt?: string;
+  auto: boolean;
+}
+
+export type DocCategory =
+  | 'intake'
+  | 'court'
+  | 'medical'
+  | 'correspondence'
+  | 'financial'
+  | 'evidence'
+  | 'discovery'
+  | 'contracts'
+  | 'property'
+  | 'inspections'
+  | 'title'
+  | 'other';
+
+export interface CaseDocument {
+  id: string;
+  name: string;
+  category: DocCategory;
+  uploadedAt: string;
+  size: number;
+  textContent: string;
+}
+
+export interface CaseChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  timestamp: string;
+}
+
+export type ActivityAction =
+  | 'email_drafted'
+  | 'email_sent'
+  | 'email_scheduled'
+  | 'doc_created'
+  | 'doc_updated'
+  | 'slides_created'
+  | 'slides_updated'
+  | 'ai_analysis'
+  | 'task_completed'
+  | 'task_added'
+  | 'document_uploaded'
+  | 'document_removed'
+  | 'ai_chat'
+  | 'pdf_generated'
+  | 'contact_created'
+  | 'contact_updated'
+  | 'status_changed'
+  | 'intake_extracted';
+
+export interface ActivityLogEntry {
+  id: string;
+  action: ActivityAction;
+  label: string;
+  detail?: string;
+  timestamp: string;
+}
+
+export interface CaseData {
+  eventId: string;
+  industry: IndustryType;
+  tasks: CaseTask[];
+  taskSuggestions: string[];
+  dismissedSuggestions: string[];
+  documents: CaseDocument[];
+  chatHistory: CaseChatMessage[];
+  activityLog: ActivityLogEntry[];
+  updatedAt: string;
 }

@@ -18,14 +18,18 @@ import type {
 import { initAuth, requestToken, revokeToken } from './lib/auth.ts';
 import {
   createAssistantReminderEvent,
+  fetchCalendarEvent,
   fetchUpcomingEvents,
   createCalendarEvent,
   getAttendeeEmails,
   getAssistantReminder,
+  getLinkedDocuments,
   getWorkflowState,
   isAssistantReminderEvent,
   updateEventAttendee,
+  updateEventDescription,
   updateEventWorkflow,
+  getEventDateTime,
   parseServiceType,
   addLinkedDocument,
 } from './lib/calendar.ts';
@@ -34,13 +38,17 @@ import { createDraft, sendMessage, sendScheduled } from './lib/gmail.ts';
 import {
   analyzeAppointment,
   generateBusinessInsights,
+  generateDocOutline,
   generateEmailDraft,
   generateEstimate,
   generateMorningBrief,
+  generateSlidesOutline,
+  generateTaskEmailDraft,
   refineEmailDraft,
 } from './lib/gemini.ts';
 import { loadEmailPreferences, saveEmailPreferences } from './lib/preferences.ts';
-import { createGoogleDoc, createGoogleSlides } from './lib/docs.ts';
+import { createGoogleDoc, createGoogleSlides, updateGoogleDoc, updateGoogleSlides } from './lib/docs.ts';
+import { logActivity, loadCase, getIndustry } from './lib/caseStore.ts';
 import Login from './components/Login.tsx';
 import Header from './components/Header.tsx';
 import Dashboard from './components/Dashboard.tsx';
@@ -135,6 +143,64 @@ export default function App() {
     if (view === 'dashboard' && user) {
       loadEvents();
     }
+  }, [view, user, loadEvents]);
+
+  useEffect(() => {
+    if (view !== 'detail' || !user || !selectedEvent) return;
+    const selectedEventId = selectedEvent.id;
+
+    const syncSelectedEvent = async () => {
+      try {
+        const fresh = await fetchCalendarEvent(user.accessToken, selectedEventId);
+        setSelectedEvent((current) => {
+          if (!current || current.id !== fresh.id) return current;
+          if (current.description === fresh.description) return current;
+          return fresh;
+        });
+        setEvents((prev) => prev.map((event) => (event.id === fresh.id ? fresh : event)));
+      } catch {
+        // ignore transient sync errors
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      void syncSelectedEvent();
+    }, 30000);
+
+    const handleFocus = () => {
+      void syncSelectedEvent();
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleFocus);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleFocus);
+    };
+  }, [view, user, selectedEvent?.id]);
+
+  // Keep dashboard in sync with inbound intake events without manual refresh.
+  useEffect(() => {
+    if (view !== 'dashboard' || !user) return;
+
+    const intervalId = window.setInterval(() => {
+      void loadEvents();
+    }, 30000);
+
+    const handleFocus = () => {
+      void loadEvents();
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleFocus);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleFocus);
+    };
   }, [view, user, loadEvents]);
 
   // --- Handlers ---
@@ -232,6 +298,7 @@ export default function App() {
     try {
       const result = await analyzeAppointment(selectedEvent, clientContact, emailPreferences);
       setAnalysis(result);
+      logActivity(selectedEvent.id, 'ai_analysis', 'AI analysis completed');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Analysis failed');
     } finally {
@@ -247,6 +314,9 @@ export default function App() {
       const contact = await createContact(user.accessToken, data);
       setClientContact(contact);
       setAttendeeEmail(data.email);
+      if (selectedEvent) {
+        logActivity(selectedEvent.id, 'contact_created', `Contact created: ${data.name}`, data.email);
+      }
       try {
         await syncAppointmentEmail(data.email, data.name);
       } catch (err) {
@@ -259,16 +329,47 @@ export default function App() {
     }
   }
 
-  async function handleCreateDoc() {
+  function buildOutlineCaseContext(eventId: string) {
+    const caseData = loadCase(eventId);
+    return {
+      industry: caseData.industry || getIndustry(),
+      tasks: caseData.tasks.map((t) => ({ label: t.label, done: t.done })),
+      documents: caseData.documents.map((d) => ({
+        name: d.name,
+        category: d.category,
+        textContent: (d.textContent || '').slice(0, 4000),
+      })),
+    };
+  }
+
+  async function handleCreateDoc(goal?: string) {
     if (!user || !selectedEvent) return;
     setCreatingDoc(true);
     setError('');
     try {
-      const title = `${parseServiceType(selectedEvent.summary)} - Notes`;
-      const doc = await createGoogleDoc(user.accessToken, title);
+      const base = parseServiceType(selectedEvent.summary);
+      const fallbackTitle = goal ? `${base} - ${goal}` : `${base} - Brief`;
+      const caseContext = buildOutlineCaseContext(selectedEvent.id);
+      const feedback = goal
+        ? `The user wants this document to help them accomplish the following task: "${goal}". Decide what TYPE of document (contract, notes, agenda, memo, proposal, letter, plan, etc.) best serves that goal and produce it. Ground it in the appointment notes.`
+        : undefined;
+      let doc;
+      let finalTitle = fallbackTitle;
+      try {
+        const outline = await generateDocOutline(selectedEvent, clientContact, analysis, caseContext, emailPreferences, feedback);
+        if (outline.title) {
+          finalTitle = outline.title.slice(0, 180);
+        }
+        doc = await createGoogleDoc(user.accessToken, finalTitle, outline);
+      } catch {
+        doc = await createGoogleDoc(user.accessToken, fallbackTitle);
+        finalTitle = fallbackTitle;
+      }
       const updatedEvent = await addLinkedDocument(user.accessToken, selectedEvent, doc);
       setSelectedEvent(updatedEvent);
       setEvents((prev) => prev.map((e) => (e.id === updatedEvent.id ? updatedEvent : e)));
+      const detail = goal ? `For task: ${goal}` : undefined;
+      logActivity(selectedEvent.id, 'doc_created', `Google Doc created: ${finalTitle}`, detail ? `${detail}\n${doc.url}` : doc.url);
       window.open(doc.url, '_blank');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create Google Doc');
@@ -277,22 +378,100 @@ export default function App() {
     }
   }
 
-  async function handleCreateSlides() {
+  async function handleCreateSlides(goal?: string) {
     if (!user || !selectedEvent) return;
     setCreatingSlides(true);
     setError('');
     try {
-      const title = `${parseServiceType(selectedEvent.summary)} - Presentation`;
-      const slides = await createGoogleSlides(user.accessToken, title);
+      const base = parseServiceType(selectedEvent.summary);
+      const fallbackTitle = goal ? `${base} - ${goal}` : `${base} - Presentation`;
+      const caseContext = buildOutlineCaseContext(selectedEvent.id);
+      const feedback = goal
+        ? `The user wants this deck to help them accomplish the following task: "${goal}". Decide what TYPE of deck (pitch, update, agenda, teaching, recap, etc.) best serves that goal and produce it. Ground it in the appointment notes.`
+        : undefined;
+      let slides;
+      let finalTitle = fallbackTitle;
+      try {
+        const outline = await generateSlidesOutline(selectedEvent, clientContact, analysis, caseContext, emailPreferences, feedback);
+        if (outline.title) {
+          finalTitle = outline.title.slice(0, 180);
+        }
+        slides = await createGoogleSlides(user.accessToken, finalTitle, outline);
+      } catch {
+        slides = await createGoogleSlides(user.accessToken, fallbackTitle);
+        finalTitle = fallbackTitle;
+      }
       const updatedEvent = await addLinkedDocument(user.accessToken, selectedEvent, slides);
       setSelectedEvent(updatedEvent);
       setEvents((prev) => prev.map((e) => (e.id === updatedEvent.id ? updatedEvent : e)));
+      const detail = goal ? `For task: ${goal}` : undefined;
+      logActivity(selectedEvent.id, 'slides_created', `Google Slides created: ${finalTitle}`, detail ? `${detail}\n${slides.url}` : slides.url);
       window.open(slides.url, '_blank');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create Google Slides');
     } finally {
       setCreatingSlides(false);
     }
+  }
+
+  async function handleTaskEmail(goal: string, taskId: string) {
+    if (!selectedEvent || !user) return;
+    setError('');
+    try {
+      const draft = await generateTaskEmailDraft(goal, selectedEvent, clientContact, emailPreferences);
+      setDraftPreview({
+        to: attendeeEmail,
+        subject: draft.subject,
+        body: draft.body,
+        actionId: `task-${taskId}`,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to draft task email');
+      throw err;
+    }
+  }
+
+  async function handleReviseAsset(assetType: 'doc' | 'slides', feedback: string) {
+    if (!user || !selectedEvent) {
+      throw new Error('Missing authenticated user or selected appointment');
+    }
+
+    const linkedDocs = getLinkedDocuments(selectedEvent)
+      .filter((doc) => doc.type === assetType)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const target = linkedDocs[0];
+
+    if (!target) {
+      throw new Error(assetType === 'doc' ? 'No Google Doc linked to this appointment.' : 'No Google Slides linked to this appointment.');
+    }
+
+    const caseContext = buildOutlineCaseContext(selectedEvent.id);
+
+    if (assetType === 'slides') {
+      const outline = await generateSlidesOutline(
+        selectedEvent,
+        clientContact,
+        analysis,
+        caseContext,
+        emailPreferences,
+        feedback,
+      );
+      await updateGoogleSlides(user.accessToken, target.id, outline);
+      logActivity(selectedEvent.id, 'slides_updated', `Google Slides updated: ${target.title}`, target.url);
+    } else {
+      const outline = await generateDocOutline(
+        selectedEvent,
+        clientContact,
+        analysis,
+        caseContext,
+        emailPreferences,
+        feedback,
+      );
+      await updateGoogleDoc(user.accessToken, target.id, outline);
+      logActivity(selectedEvent.id, 'doc_updated', `Google Doc updated: ${target.title}`, target.url);
+    }
+
+    return target;
   }
 
   async function syncAppointmentEmail(email: string, displayName?: string) {
@@ -310,6 +489,13 @@ export default function App() {
       setAttendeeEmail(email);
       throw err;
     }
+  }
+
+  async function handleUpdateDescription(description: string) {
+    if (!user || !selectedEvent) return;
+    const updated = await updateEventDescription(user.accessToken, selectedEvent.id, description);
+    setSelectedEvent(updated);
+    setEvents((prev) => prev.map((event) => (event.id === updated.id ? updated : event)));
   }
 
   async function handleUpdateAttendeeEmail(email: string) {
@@ -434,6 +620,9 @@ export default function App() {
       await createDraft(user.accessToken, draft.to, draft.subject, draft.body);
       setActionResults((prev) => ({ ...prev, [draft.actionId]: 'drafted' }));
       await updateWorkflowAfterAction(draft.actionId);
+      if (selectedEvent) {
+        logActivity(selectedEvent.id, 'email_drafted', `Email drafted: ${draft.subject}`, `To: ${draft.to}`);
+      }
       setDraftPreview(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save draft');
@@ -450,6 +639,9 @@ export default function App() {
       await sendMessage(user.accessToken, draft.to, draft.subject, draft.body);
       setActionResults((prev) => ({ ...prev, [draft.actionId]: 'sent' }));
       await updateWorkflowAfterAction(draft.actionId);
+      if (selectedEvent) {
+        logActivity(selectedEvent.id, 'email_sent', `Email sent: ${draft.subject}`, `To: ${draft.to}`);
+      }
       setDraftPreview(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send email');
@@ -466,6 +658,9 @@ export default function App() {
       await sendScheduled(user.accessToken, draft.to, draft.subject, draft.body, sendAt);
       setActionResults((prev) => ({ ...prev, [draft.actionId]: 'scheduled' }));
       await updateWorkflowAfterAction(draft.actionId);
+      if (selectedEvent) {
+        logActivity(selectedEvent.id, 'email_scheduled', `Email scheduled: ${draft.subject}`, `To: ${draft.to}, Send at: ${sendAt.toLocaleString()}`);
+      }
       setDraftPreview(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to schedule email');
@@ -501,11 +696,7 @@ export default function App() {
     try {
       const createdEvent = await createCalendarEvent(user.accessToken, form);
       setEvents((prev) =>
-        [...prev, createdEvent].sort((a, b) => {
-          const aStart = new Date(a.start.dateTime || a.start.date || '').getTime();
-          const bStart = new Date(b.start.dateTime || b.start.date || '').getTime();
-          return aStart - bStart;
-        })
+        [...prev, createdEvent].sort((a, b) => getEventDateTime(a).getTime() - getEventDateTime(b).getTime())
       );
       setShowNewAppointmentModal(false);
       await handleSelectEvent(createdEvent);
@@ -664,10 +855,12 @@ export default function App() {
             onSelectContact={handleSelectContact}
             onUpdateEmail={handleUpdateAttendeeEmail}
             updatingEmail={updatingEmail}
+            onUpdateDescription={handleUpdateDescription}
             onCreateContact={handleCreateContact}
             creatingContact={creatingContact}
             onCreateDoc={handleCreateDoc}
             onCreateSlides={handleCreateSlides}
+            onDraftTaskEmail={handleTaskEmail}
             creatingDoc={creatingDoc}
             creatingSlides={creatingSlides}
             analysis={analysis}
@@ -676,6 +869,7 @@ export default function App() {
             actionLoading={actionLoading}
             actionResults={actionResults}
             onAction={handleAction}
+            onReviseAsset={handleReviseAsset}
           />
         </>
       )}
@@ -729,9 +923,10 @@ function buildAssistantActionItems(events: CalendarEvent[], preferences: EmailPr
   const items: AssistantActionItem[] = [];
 
   for (const event of events) {
-    const startIso = event.start.dateTime || event.start.date || '';
+    const startParsed = getEventDateTime(event);
+    const start = isNaN(startParsed.getTime()) ? null : startParsed;
+    const startIso = start ? start.toISOString() : '';
     const endIso = event.end.dateTime || event.end.date || '';
-    const start = startIso ? new Date(startIso) : null;
     const end = endIso ? new Date(endIso) : null;
     const workflow = getWorkflowState(event);
     const attendeeEmails = getAttendeeEmails(event);
@@ -832,8 +1027,8 @@ function buildAssistantActionItems(events: CalendarEvent[], preferences: EmailPr
 function getEventsForDate(events: CalendarEvent[], date: Date): CalendarEvent[] {
   const target = date.toDateString();
   return events.filter((event) => {
-    const start = event.start.dateTime || event.start.date;
-    return start ? new Date(start).toDateString() === target : false;
+    const start = getEventDateTime(event);
+    return !isNaN(start.getTime()) && start.toDateString() === target;
   });
 }
 

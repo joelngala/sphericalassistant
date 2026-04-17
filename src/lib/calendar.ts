@@ -50,6 +50,16 @@ export async function fetchUpcomingEvents(
   return data.items || [];
 }
 
+export async function fetchCalendarEvent(
+  accessToken: string,
+  eventId: string,
+): Promise<CalendarEvent> {
+  return calendarFetch<CalendarEvent>(
+    accessToken,
+    `/calendars/primary/events/${eventId}`
+  );
+}
+
 export async function createAssistantReminderEvent(
   accessToken: string,
   reminder: AssistantReminderData,
@@ -159,6 +169,17 @@ export async function updateEventWorkflow(
   });
 }
 
+export async function updateEventDescription(
+  accessToken: string,
+  eventId: string,
+  description: string,
+): Promise<CalendarEvent> {
+  return calendarFetch<CalendarEvent>(accessToken, `/calendars/primary/events/${eventId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ description }),
+  });
+}
+
 export async function updateEventAttendee(
   accessToken: string,
   event: CalendarEvent,
@@ -220,8 +241,12 @@ function buildLocalDateTime(date: string, time: string): string {
 }
 
 export function getEventDateTime(event: CalendarEvent): Date {
-  const dt = event.start.dateTime || event.start.date || '';
-  return new Date(dt);
+  if (event.start.dateTime) return new Date(event.start.dateTime);
+  if (event.start.date) {
+    const [y, m, d] = event.start.date.split('-').map(Number);
+    if (y && m && d) return new Date(y, m - 1, d);
+  }
+  return new Date(NaN);
 }
 
 export function formatEventTime(event: CalendarEvent): string {
