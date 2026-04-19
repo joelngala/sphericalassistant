@@ -1,4 +1,4 @@
-import type { GoogleDocOutline, SlidesDeckOutline } from '../types.ts';
+import type { CaseDocument, DocCategory, GoogleDocOutline, SlidesDeckOutline } from '../types.ts';
 
 export interface LinkedDocument {
   type: 'doc' | 'slides';
@@ -10,6 +10,10 @@ export interface LinkedDocument {
 
 const DOCS_BASE = 'https://docs.googleapis.com/v1/documents';
 const SLIDES_BASE = 'https://slides.googleapis.com/v1/presentations';
+const DRIVE_BASE = 'https://www.googleapis.com/drive/v3';
+const DRIVE_UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3';
+const ROOT_FOLDER_NAME = 'Spherical Assistant';
+const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const MAX_SLIDES = 8;
 const MAX_BULLETS = 6;
 const MAX_DOC_SECTIONS = 8;
@@ -376,6 +380,374 @@ async function populateGoogleSlides(
   if (phase2.length > 0) {
     await batchUpdateSlides(accessToken, presentationId, phase2);
   }
+}
+
+// --- Google Drive: matter folders + file uploads ---
+
+export interface DriveFolderRef {
+  id: string;
+  name: string;
+  url: string;
+}
+
+export interface DriveFileRef {
+  id: string;
+  name: string;
+  url: string;
+}
+
+export interface DriveMatterFile {
+  id: string;
+  name: string;
+  size: number;
+  uploadedAt: string;
+  url: string;
+  category?: DocCategory;
+}
+
+async function driveFetch(accessToken: string, path: string, init?: RequestInit) {
+  const response = await fetch(`${DRIVE_BASE}${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+      ...(init?.headers || {}),
+    },
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => null);
+    throw new Error(error?.error?.message || `Google Drive error: ${response.status}`);
+  }
+  return response.json();
+}
+
+function escapeDriveQuery(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+function slugifyPart(input: string): string {
+  return (input || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-');
+}
+
+async function findFolderByName(
+  accessToken: string,
+  name: string,
+  parentId?: string,
+): Promise<DriveFolderRef | null> {
+  const parentClause = parentId ? ` and '${escapeDriveQuery(parentId)}' in parents` : '';
+  const q = `name = '${escapeDriveQuery(name)}' and mimeType = '${FOLDER_MIME}' and trashed = false${parentClause}`;
+  const params = new URLSearchParams({
+    q,
+    fields: 'files(id,name,webViewLink)',
+    pageSize: '1',
+  });
+  const data = await driveFetch(accessToken, `/files?${params.toString()}`);
+  const file = Array.isArray(data?.files) && data.files[0];
+  if (!file) return null;
+  return {
+    id: file.id,
+    name: file.name,
+    url: file.webViewLink || `https://drive.google.com/drive/folders/${file.id}`,
+  };
+}
+
+async function createFolder(
+  accessToken: string,
+  name: string,
+  parentId?: string,
+): Promise<DriveFolderRef> {
+  const body: Record<string, unknown> = { name, mimeType: FOLDER_MIME };
+  if (parentId) body.parents = [parentId];
+  const data = await driveFetch(accessToken, '/files?fields=id,name,webViewLink', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+  return {
+    id: data.id,
+    name: data.name,
+    url: data.webViewLink || `https://drive.google.com/drive/folders/${data.id}`,
+  };
+}
+
+async function ensureFolder(
+  accessToken: string,
+  name: string,
+  parentId?: string,
+): Promise<DriveFolderRef> {
+  const existing = await findFolderByName(accessToken, name, parentId);
+  if (existing) return existing;
+  return createFolder(accessToken, name, parentId);
+}
+
+function deriveCaseToken(caseNumber?: string, matterCode?: string): string {
+  const explicit = slugifyPart(matterCode || '');
+  if (explicit) return explicit.slice(0, 12);
+
+  const raw = (caseNumber || '').toLowerCase();
+  const tokens = raw.split(/[^a-z0-9]+/).filter(Boolean);
+  const alphaTokens = tokens.filter((token) => /[a-z]/.test(token) && token.length <= 12);
+  if (alphaTokens.length > 0) {
+    const strongest = [...alphaTokens].sort((a, b) => b.length - a.length)[0];
+    return strongest;
+  }
+
+  return 'gen';
+}
+
+function buildLegacyMatterFolderName(clientName: string, caseNumber?: string): string {
+  const client = (clientName || 'Unknown Client').trim().replace(/[\\/:*?"<>|]/g, '-');
+  const caseRef = (caseNumber || '').trim().replace(/[\\/:*?"<>|]/g, '-');
+  return caseRef ? `${client} — ${caseRef}` : client;
+}
+
+export function buildMatterFolderName(clientName: string, caseNumber?: string, matterCode?: string): string {
+  const clientSlug = slugifyPart(clientName || '') || 'unknown-client';
+  const caseToken = deriveCaseToken(caseNumber, matterCode);
+  return `${clientSlug}-case-${caseToken}`;
+}
+
+export async function ensureRootFolder(accessToken: string): Promise<DriveFolderRef> {
+  return ensureFolder(accessToken, ROOT_FOLDER_NAME);
+}
+
+export async function ensureMatterFolder(
+  accessToken: string,
+  clientName: string,
+  caseNumber?: string,
+  matterCode?: string,
+): Promise<DriveFolderRef> {
+  const root = await ensureRootFolder(accessToken);
+  const canonical = buildMatterFolderName(clientName, caseNumber, matterCode);
+  const existingCanonical = await findFolderByName(accessToken, canonical, root.id);
+  if (existingCanonical) return existingCanonical;
+
+  // Backward compatibility: keep using legacy folders when they already exist.
+  const legacy = buildLegacyMatterFolderName(clientName, caseNumber);
+  const existingLegacy = await findFolderByName(accessToken, legacy, root.id);
+  if (existingLegacy) return existingLegacy;
+
+  return ensureFolder(accessToken, canonical, root.id);
+}
+
+export async function findMatterFolder(
+  accessToken: string,
+  clientName: string,
+  caseNumber?: string,
+  matterCode?: string,
+): Promise<DriveFolderRef | null> {
+  const root = await ensureRootFolder(accessToken);
+  const canonical = buildMatterFolderName(clientName, caseNumber, matterCode);
+  const foundCanonical = await findFolderByName(accessToken, canonical, root.id);
+  if (foundCanonical) return foundCanonical;
+  const legacy = buildLegacyMatterFolderName(clientName, caseNumber);
+  return findFolderByName(accessToken, legacy, root.id);
+}
+
+function toDocCategory(value: string | undefined): DocCategory | undefined {
+  if (!value) return undefined;
+  const v = value.trim().toLowerCase();
+  const allowed: DocCategory[] = [
+    'intake',
+    'court',
+    'medical',
+    'correspondence',
+    'financial',
+    'evidence',
+    'discovery',
+    'contracts',
+    'property',
+    'inspections',
+    'title',
+    'other',
+  ];
+  return allowed.includes(v as DocCategory) ? (v as DocCategory) : undefined;
+}
+
+function inferDocCategoryFromName(name: string): DocCategory {
+  const n = name.toLowerCase();
+  if (/\b(intake|retainer|engagement)\b/.test(n)) return 'intake';
+  if (/\b(court|hearing|motion|order|complaint|citation|arrest)\b/.test(n)) return 'court';
+  if (/\b(medical|hospital|diagnosis|treatment|records?)\b/.test(n)) return 'medical';
+  if (/\b(email|letter|correspondence|message)\b/.test(n)) return 'correspondence';
+  if (/\b(invoice|bill|receipt|payment|financial|statement)\b/.test(n)) return 'financial';
+  if (/\b(photo|image|video|evidence|exhibit)\b/.test(n)) return 'evidence';
+  if (/\b(discovery|interrogator|deposition|disclosure)\b/.test(n)) return 'discovery';
+  if (/\b(contract|agreement|offer|addendum)\b/.test(n)) return 'contracts';
+  if (/\b(property|listing|deed|survey)\b/.test(n)) return 'property';
+  if (/\b(inspection|appraisal|condition report)\b/.test(n)) return 'inspections';
+  if (/\b(title|closing|escrow|settlement)\b/.test(n)) return 'title';
+  return 'other';
+}
+
+export async function listMatterFolderFiles(
+  accessToken: string,
+  folderId: string,
+): Promise<DriveMatterFile[]> {
+  const files: DriveMatterFile[] = [];
+  let pageToken = '';
+  do {
+    const params = new URLSearchParams({
+      q: `'${escapeDriveQuery(folderId)}' in parents and trashed = false and mimeType != '${FOLDER_MIME}'`,
+      fields: 'nextPageToken,files(id,name,size,mimeType,createdTime,webViewLink,appProperties)',
+      pageSize: '200',
+      orderBy: 'createdTime desc',
+    });
+    if (pageToken) params.set('pageToken', pageToken);
+    const data = (await driveFetch(accessToken, `/files?${params.toString()}`)) as {
+      files?: Array<{
+        id?: string;
+        name?: string;
+        size?: string;
+        mimeType?: string;
+        createdTime?: string;
+        webViewLink?: string;
+        appProperties?: Record<string, string>;
+      }>;
+      nextPageToken?: string;
+    };
+    for (const file of data.files || []) {
+      if (!file?.id || !file?.name) continue;
+      if (typeof file.mimeType === 'string' && (file.mimeType.startsWith('image/') || file.mimeType.startsWith('video/'))) {
+        continue;
+      }
+      const category = toDocCategory(file.appProperties?.sphericalCategory);
+      const uploadedAt = file.appProperties?.sphericalUploadedAt || file.createdTime || new Date().toISOString();
+      const size = Number(file.size || 0);
+      files.push({
+        id: file.id,
+        name: file.name,
+        size: Number.isFinite(size) ? size : 0,
+        uploadedAt,
+        url: file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`,
+        category,
+      });
+    }
+    pageToken = data.nextPageToken || '';
+  } while (pageToken);
+  return files;
+}
+
+export function mapDriveFilesToCaseDocuments(files: DriveMatterFile[]): CaseDocument[] {
+  return files.map((file) => ({
+    id: file.id,
+    name: file.name,
+    category: file.category || inferDocCategoryFromName(file.name),
+    uploadedAt: file.uploadedAt,
+    size: file.size,
+    textContent: '',
+    driveFileId: file.id,
+    driveUrl: file.url,
+  }));
+}
+
+export async function findSpreadsheetInFolder(
+  accessToken: string,
+  name: string,
+  parentId: string,
+): Promise<{ id: string; name: string; url: string } | null> {
+  const q = `name = '${escapeDriveQuery(name)}' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false and '${escapeDriveQuery(parentId)}' in parents`;
+  const params = new URLSearchParams({
+    q,
+    fields: 'files(id,name,webViewLink)',
+    pageSize: '1',
+  });
+  const data = await driveFetch(accessToken, `/files?${params.toString()}`);
+  const file = Array.isArray(data?.files) && data.files[0];
+  if (!file) return null;
+  return {
+    id: file.id,
+    name: file.name,
+    url: file.webViewLink || `https://docs.google.com/spreadsheets/d/${file.id}/edit`,
+  };
+}
+
+export async function createSpreadsheetInFolder(
+  accessToken: string,
+  name: string,
+  parentId: string,
+): Promise<{ id: string; name: string; url: string }> {
+  const data = await driveFetch(accessToken, '/files?fields=id,name,webViewLink', {
+    method: 'POST',
+    body: JSON.stringify({
+      name,
+      mimeType: 'application/vnd.google-apps.spreadsheet',
+      parents: [parentId],
+    }),
+  });
+  return {
+    id: data.id,
+    name: data.name,
+    url: data.webViewLink || `https://docs.google.com/spreadsheets/d/${data.id}/edit`,
+  };
+}
+
+export async function uploadFileToDrive(
+  accessToken: string,
+  file: File,
+  folderId: string,
+  metadata?: {
+    category?: DocCategory;
+    uploadedAt?: string;
+  },
+): Promise<DriveFileRef> {
+  const driveMetadata = {
+    name: file.name,
+    parents: [folderId],
+    appProperties: {
+      ...(metadata?.category ? { sphericalCategory: metadata.category } : {}),
+      ...(metadata?.uploadedAt ? { sphericalUploadedAt: metadata.uploadedAt } : {}),
+    },
+  };
+  const boundary = `-------spherical-${Date.now().toString(36)}`;
+  const encoder = new TextEncoder();
+  const head = encoder.encode(
+    `--${boundary}\r\n` +
+      `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+      JSON.stringify(driveMetadata) +
+      `\r\n--${boundary}\r\n` +
+      `Content-Type: ${file.type || 'application/octet-stream'}\r\n\r\n`,
+  );
+  const tail = encoder.encode(`\r\n--${boundary}--`);
+  const fileBuffer = new Uint8Array(await file.arrayBuffer());
+  const body = new Uint8Array(head.length + fileBuffer.length + tail.length);
+  body.set(head, 0);
+  body.set(fileBuffer, head.length);
+  body.set(tail, head.length + fileBuffer.length);
+
+  const response = await fetch(
+    `${DRIVE_UPLOAD_BASE}/files?uploadType=multipart&fields=id,name,webViewLink`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': `multipart/related; boundary=${boundary}`,
+      },
+      body,
+    },
+  );
+  if (!response.ok) {
+    const error = await response.json().catch(() => null);
+    throw new Error(error?.error?.message || `Drive upload failed: ${response.status}`);
+  }
+  const data = await response.json();
+  return {
+    id: data.id,
+    name: data.name,
+    url: data.webViewLink || `https://drive.google.com/file/d/${data.id}/view`,
+  };
+}
+
+export async function trashDriveFile(accessToken: string, fileId: string): Promise<void> {
+  await driveFetch(accessToken, `/files/${encodeURIComponent(fileId)}?fields=id`, {
+    method: 'PATCH',
+    body: JSON.stringify({ trashed: true }),
+  });
 }
 
 async function batchUpdateSlides(

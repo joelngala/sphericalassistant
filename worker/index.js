@@ -185,6 +185,11 @@ export default {
         return jsonResponse(result, 200, allowedOrigin);
       }
 
+      if (url.pathname === '/summarize-document') {
+        const result = await summarizeDocument(env, body);
+        return jsonResponse(result, 200, allowedOrigin);
+      }
+
       if (url.pathname === '/suggest-tasks') {
         const result = await suggestTasks(env, body);
         return jsonResponse(result, 200, allowedOrigin);
@@ -1650,6 +1655,16 @@ function buildCalendarEventPayload({
   const receivedDate = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
 
   const esc = (str) => (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // Deep-link into HOVER case summary — the lawyer's own browser passes the
+  // PerimeterX gate normally on first visit, so this is ground truth with
+  // one click. Used to cross-check bulk PDF / CSV matches against the
+  // Clerk's live case detail.
+  const hoverCaseLink = (caseNumber) => {
+    const num = (caseNumber || '').trim();
+    if (!num) return '';
+    const url = `https://hover.hillsclerk.com/html/case/caseSummary.html?caseNumber=${encodeURIComponent(num)}`;
+    return ` <a href="${esc(url)}">🔗 view on HOVER</a>`;
+  };
   const phoneLink = answers.phone ? `<a href="tel:${esc(answers.phone.replace(/\D/g, ''))}">${esc(answers.phone)}</a>` : '—';
   const emailLink = answers.email ? `<a href="mailto:${esc(answers.email)}">${esc(answers.email)}</a>` : '—';
   const jurisdiction = [answers.jurisdictionCounty, answers.jurisdictionState].filter(Boolean).join(', ') || '—';
@@ -1713,7 +1728,7 @@ function buildCalendarEventPayload({
       const conf = m.match?.confidence || 'low';
       const confBadge = conf === 'high' ? '🟢' : conf === 'medium' ? '🟡' : '⚪';
 
-      html.push(`${confBadge} <b>${esc(m.caseNumber)}</b> — ${typeBadge}<br>`);
+      html.push(`${confBadge} <b>${esc(m.caseNumber)}</b>${hoverCaseLink(m.caseNumber)} — ${typeBadge}<br>`);
       const idLine = [name || '(no name)', def.dob ? `DOB ${def.dob}` : null, def.city ? def.city : null]
         .filter(Boolean)
         .join(' • ');
@@ -1746,7 +1761,10 @@ function buildCalendarEventPayload({
   if (upcomingHearings?.ok && Array.isArray(upcomingHearings.matches) && upcomingHearings.matches.length > 0) {
     html.push(`<br><b>🗓️ UPCOMING HEARINGS</b><br>`);
     html.push(
-      `${upcomingHearings.matchCount} potential hearing match${upcomingHearings.matchCount === 1 ? '' : 'es'} in next ${upcomingHearings.windowDays} days<br><br>`
+      `${upcomingHearings.matchCount} potential hearing match${upcomingHearings.matchCount === 1 ? '' : 'es'} in next ${upcomingHearings.windowDays} days<br>`
+    );
+    html.push(
+      `<span style="color:#666"><i>From published court calendar PDFs — may miss last-minute additions or reassignments. Click 🔗 to verify on HOVER.</i></span><br><br>`
     );
     for (const h of upcomingHearings.matches.slice(0, 5)) {
       const conf = h.match?.confidence || 'low';
@@ -1759,7 +1777,7 @@ function buildCalendarEventPayload({
         ? `<a href="${esc(h.url)}">${esc(h.pdf || 'calendar PDF')}</a>`
         : esc(h.pdf || 'calendar PDF');
 
-      html.push(`${confBadge} <b>${esc(h.caseNumber)}</b> — 🏛️ ${esc((h.calendarType || 'calendar').toUpperCase())}<br>`);
+      html.push(`${confBadge} <b>${esc(h.caseNumber)}</b>${hoverCaseLink(h.caseNumber)} — 🏛️ ${esc((h.calendarType || 'calendar').toUpperCase())}<br>`);
       html.push(`${esc(name || '(no name)')}${h.dob ? ` • DOB ${esc(h.dob)}` : ''}<br>`);
       if (docket) html.push(`${esc(docket)}<br>`);
       if (hearing.setFor) html.push(`<i>${esc(hearing.setFor)}</i><br>`);
@@ -1804,6 +1822,63 @@ function buildCalendarEventPayload({
     receivedAt: now.toISOString(),
   };
 
+  // Compact structured court data so the frontend can render a typed card
+  // without parsing HTML. Capped at 1024 chars per extendedProperty value.
+  const compactRecords = (courtLookup?.ok && Array.isArray(courtLookup.matches) ? courtLookup.matches : [])
+    .slice(0, 3)
+    .map((m) => {
+      const def = m.defendant || {};
+      const name = [def.firstName, def.middleName, def.lastName].filter(Boolean).join(' ');
+      const firstCharge = Array.isArray(m.charges) && m.charges[0]
+        ? (m.charges[0].description || m.charges[0].statute || '')
+        : '';
+      return {
+        caseNumber: m.caseNumber || '',
+        source: m.source || '',
+        name,
+        dob: def.dob || '',
+        caseType: m.caseType || '',
+        charge: String(firstCharge).slice(0, 140),
+        chargeCount: Array.isArray(m.charges) ? m.charges.length : 0,
+        attorney: m.attorney || '',
+        filingDate: m.filingDate || '',
+        confidence: m.match?.confidence || 'low',
+      };
+    });
+
+  const compactHearings = (upcomingHearings?.ok && Array.isArray(upcomingHearings.matches) ? upcomingHearings.matches : [])
+    .slice(0, 3)
+    .map((h) => {
+      const def = h.defendant || {};
+      const name = [def.firstName, def.middleName, def.lastName].filter(Boolean).join(' ');
+      const hearing = h.hearing || {};
+      const nextFuture = Array.isArray(h.futureHearings) && h.futureHearings[0]
+        ? [h.futureHearings[0].type, h.futureHearings[0].date, h.futureHearings[0].time].filter(Boolean).join(' ')
+        : '';
+      return {
+        caseNumber: h.caseNumber || '',
+        calendarType: h.calendarType || '',
+        name,
+        dob: h.dob || '',
+        courtDate: hearing.courtDate || '',
+        session: hearing.session || '',
+        room: hearing.courtRoom || '',
+        setFor: String(hearing.setFor || '').slice(0, 120),
+        nextFuture,
+        url: h.url || '',
+        confidence: h.match?.confidence || 'low',
+      };
+    });
+
+  const courtPayload = JSON.stringify({
+    records: compactRecords,
+    hearings: compactHearings,
+    recordsWindow: courtLookup?.windowDays || 0,
+    hearingsWindow: upcomingHearings?.windowDays || 0,
+    recordsCount: courtLookup?.matchCount || 0,
+    hearingsCount: upcomingHearings?.matchCount || 0,
+  });
+
   return {
     summary: summaryText,
     description: html.join(''),
@@ -1817,6 +1892,17 @@ function buildCalendarEventPayload({
         sphericalAssistant: JSON.stringify(workflow),
         intakeSource: 'chatbot',
         intakeFirmId: firmId || '',
+        sphericalCaseNumber: (answers.caseNumber || '').toString().trim(),
+        sphericalClientName: (answers.fullName || '').toString().trim(),
+        sphericalMatterType: (answers.matterType || '').toString().trim(),
+        sphericalCourt: courtPayload.length <= 1024 ? courtPayload : JSON.stringify({
+          records: compactRecords.slice(0, 2),
+          hearings: compactHearings.slice(0, 2),
+          recordsWindow: courtLookup?.windowDays || 0,
+          hearingsWindow: upcomingHearings?.windowDays || 0,
+          recordsCount: courtLookup?.matchCount || 0,
+          hearingsCount: upcomingHearings?.matchCount || 0,
+        }),
       },
     },
   };
@@ -2067,6 +2153,32 @@ Return ONLY the category key (e.g. "court" or "contracts"). No punctuation, no e
   const validCategories = categories.split(',').map((c) => c.trim());
 
   return { category: validCategories.includes(category) ? category : 'other' };
+}
+
+async function summarizeDocument(env, payload) {
+  const { fileName, textPreview, industry = 'legal' } = payload || {};
+  if (!fileName) throw new Error('Missing fileName');
+
+  const prompt = `You are reading a single document from a ${industry === 'realestate' ? 'real estate transaction' : 'legal matter'}. In ONE short sentence (max 18 words), describe what this document actually IS — include the specific document type and the single most important fact (a date, party, case number, amount, etc.).
+
+File name: ${fileName}
+Content (first 1500 chars):
+${(textPreview || '').slice(0, 1500)}
+
+Good examples:
+- "Tampa PD arrest affidavit — DUI stop on 2026-02-14, driver Smith."
+- "State Farm medical lien letter — $4,820 outstanding on auto-claim #A87-223."
+- "Purchase agreement — 1812 Oak Ave, buyer Ramirez, $425k, close date 2026-05-01."
+
+Return ONLY the sentence. No quotes, no prefix, no explanation.`;
+
+  const text = await callGemini(env, GEMINI_INTAKE_MODEL, {
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    generationConfig: { temperature: 0.2 },
+  });
+
+  const summary = (text || '').trim().replace(/^["']+|["']+$/g, '').slice(0, 240);
+  return { summary };
 }
 
 async function suggestTasks(env, payload) {

@@ -11,6 +11,8 @@ interface DashboardProps {
   onRefresh: () => void;
   onSelectEvent: (event: CalendarEvent) => void;
   onCreateAppointment: () => void;
+  onOpenCases: () => void;
+  onOpenOrganizer: () => void;
   insights: BusinessInsights | null;
   insightsLoading: boolean;
   onGenerateInsights: () => void;
@@ -42,6 +44,8 @@ export default function Dashboard({
   onRefresh,
   onSelectEvent,
   onCreateAppointment,
+  onOpenCases,
+  onOpenOrganizer,
   insights,
   insightsLoading,
   onGenerateInsights,
@@ -95,6 +99,18 @@ export default function Dashboard({
               <path d="M8 3v10M3 8h10" />
             </svg>
             New Appointment
+          </button>
+          <button className="btn-secondary" onClick={onOpenOrganizer}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            </svg>
+            Documents
+          </button>
+          <button className="btn-secondary" onClick={onOpenCases}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 4h18v4H3zM3 10h18v10H3zM8 14h8M8 18h5" />
+            </svg>
+            Cases
           </button>
           <button className="btn-secondary" onClick={onRefresh} disabled={loading}>
             {loading ? (

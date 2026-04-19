@@ -163,13 +163,34 @@ export function addDocument(
   category: DocCategory,
   textContent: string,
   size: number,
+  extras?: { driveFileId?: string; driveUrl?: string; aiSummary?: string },
 ): CaseDocument {
-  const doc: CaseDocument = { id: uid(), name, category, uploadedAt: now(), size, textContent };
+  const doc: CaseDocument = {
+    id: uid(),
+    name,
+    category,
+    uploadedAt: now(),
+    size,
+    textContent,
+    driveFileId: extras?.driveFileId,
+    driveUrl: extras?.driveUrl,
+    aiSummary: extras?.aiSummary,
+  };
   const data = loadCase(eventId);
   data.documents.push(doc);
-  logActivity(eventId, 'document_uploaded', `Document uploaded: ${name}`, `Category: ${category}`);
+  const detailParts = [`Category: ${category}`];
+  if (extras?.aiSummary) detailParts.push(extras.aiSummary);
+  if (extras?.driveUrl) detailParts.push(`Drive: ${extras.driveUrl}`);
+  logActivity(eventId, 'document_uploaded', `Document uploaded: ${name}`, detailParts.join(' · '));
   saveCase(data);
   return doc;
+}
+
+export function setDriveFolder(eventId: string, id: string, url: string) {
+  const data = loadCase(eventId);
+  data.driveFolderId = id;
+  data.driveFolderUrl = url;
+  saveCase(data);
 }
 
 export function removeDocument(eventId: string, docId: string) {
@@ -180,6 +201,40 @@ export function removeDocument(eventId: string, docId: string) {
     logActivity(eventId, 'document_removed', `Document removed: ${doc.name}`);
   }
   saveCase(data);
+}
+
+export function listAllCases(): CaseData[] {
+  const out: CaseData[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (!key || !key.startsWith(STORAGE_PREFIX)) continue;
+    const raw = localStorage.getItem(key);
+    if (!raw) continue;
+    try {
+      const parsed = JSON.parse(raw) as CaseData;
+      if (!Array.isArray(parsed.taskSuggestions)) parsed.taskSuggestions = [];
+      if (!Array.isArray(parsed.dismissedSuggestions)) parsed.dismissedSuggestions = [];
+      if (!Array.isArray(parsed.documents)) parsed.documents = [];
+      out.push(parsed);
+    } catch {
+      // skip corrupt entries
+    }
+  }
+  return out;
+}
+
+export interface OrganizedDocument extends CaseDocument {
+  eventId: string;
+}
+
+export function listAllDocuments(): OrganizedDocument[] {
+  const out: OrganizedDocument[] = [];
+  for (const data of listAllCases()) {
+    for (const doc of data.documents) {
+      out.push({ ...doc, eventId: data.eventId });
+    }
+  }
+  return out.sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
 }
 
 // --- Payment Plans ---

@@ -152,6 +152,27 @@ export function isAssistantReminderEvent(event: CalendarEvent): boolean {
   return getAssistantReminder(event) !== null || event.summary.startsWith('[Spherical]');
 }
 
+export function isIntakeEvent(event: CalendarEvent): boolean {
+  const source = event.extendedProperties?.private?.intakeSource;
+  if (source) return true;
+  const workflow = getWorkflowState(event);
+  return workflow.source === 'intake-chatbot';
+}
+
+export function getIntakeReceivedAt(event: CalendarEvent): Date | null {
+  const workflow = getWorkflowState(event);
+  if (!workflow.receivedAt) return null;
+  const d = new Date(workflow.receivedAt);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+export function isFreshIntake(event: CalendarEvent, windowMs = 24 * 60 * 60 * 1000): boolean {
+  if (!isIntakeEvent(event)) return false;
+  const received = getIntakeReceivedAt(event);
+  if (!received) return false;
+  return Date.now() - received.getTime() <= windowMs;
+}
+
 export async function updateEventWorkflow(
   accessToken: string,
   eventId: string,
@@ -202,6 +223,50 @@ export function parseServiceType(summary: string): string {
 export function getClientNameFromSummary(summary: string): string {
   const parts = summary.split(/[-–—]/);
   return parts.length > 1 ? parts.slice(1).join('-').trim() : '';
+}
+
+export function getCaseNumberFromEvent(event: CalendarEvent): string {
+  const stored = event.extendedProperties?.private?.sphericalCaseNumber;
+  if (stored) return stored.trim();
+  const desc = event.description || '';
+  const match = desc.match(/case\s*(?:number|#)\s*[:\-]?\s*([A-Za-z0-9\-./]+)/i);
+  return match ? match[1].trim() : '';
+}
+
+export function getCourtRecords(event: CalendarEvent): import('../types.ts').CourtRecordsPayload | null {
+  const raw = event.extendedProperties?.private?.sphericalCourt;
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as import('../types.ts').CourtRecordsPayload;
+    const records = Array.isArray(parsed.records) ? parsed.records : [];
+    const hearings = Array.isArray(parsed.hearings) ? parsed.hearings : [];
+    const recordsWindow = Number.isFinite(parsed.recordsWindow) ? parsed.recordsWindow : 0;
+    const hearingsWindow = Number.isFinite(parsed.hearingsWindow) ? parsed.hearingsWindow : 0;
+    const recordsCount = Number.isFinite(parsed.recordsCount) ? parsed.recordsCount : records.length;
+    const hearingsCount = Number.isFinite(parsed.hearingsCount) ? parsed.hearingsCount : hearings.length;
+    return {
+      records,
+      hearings,
+      recordsWindow,
+      hearingsWindow,
+      recordsCount,
+      hearingsCount,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function buildHoverCaseLink(caseNumber: string): string {
+  const n = (caseNumber || '').trim();
+  if (!n) return '';
+  return `https://hover.hillsclerk.com/html/case/caseSummary.html?caseNumber=${encodeURIComponent(n)}`;
+}
+
+export function getMatterFolderLabel(event: CalendarEvent): string {
+  const client = getClientNameFromSummary(event.summary) || 'Unknown Client';
+  const caseNo = getCaseNumberFromEvent(event);
+  return caseNo ? `${client} — ${caseNo}` : client;
 }
 
 export function getAttendeeEmails(event: CalendarEvent): string[] {

@@ -1,0 +1,16 @@
+{
+  "name": "sphericalassistant-scraper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Playwright-based county portal scraper. Runs as a standalone Node service; called by the Cloudflare Worker after intake.",
+  "scripts": {
+    "cli": "node cli.mjs",
+    "postinstall": "playwright install chromium"
+  },
+  "dependencies": {
+    "csv-parse": "^6.2.1",
+    "pdfjs-dist": "^5.6.205",
+    "playwright": "^1.48.0"
+  }
+}

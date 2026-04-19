@@ -85,6 +85,10 @@ export interface WorkflowState {
   followedUpAt?: string;
   estimateSent?: boolean;
   contactUpdated?: boolean;
+  source?: string;
+  urgent?: boolean;
+  conflictFlagged?: boolean;
+  receivedAt?: string;
 }
 
 export interface EmailDraft {
@@ -178,6 +182,42 @@ export interface AssistantActionItem {
   priority: 'high' | 'medium' | 'low';
 }
 
+export interface CourtRecordMatch {
+  caseNumber: string;
+  source: string;
+  name: string;
+  dob: string;
+  caseType: string;
+  charge: string;
+  chargeCount: number;
+  attorney: string;
+  filingDate: string;
+  confidence: 'high' | 'medium' | 'low' | string;
+}
+
+export interface CourtHearingMatch {
+  caseNumber: string;
+  calendarType: string;
+  name: string;
+  dob: string;
+  courtDate: string;
+  session: string;
+  room: string;
+  setFor: string;
+  nextFuture: string;
+  url: string;
+  confidence: 'high' | 'medium' | 'low' | string;
+}
+
+export interface CourtRecordsPayload {
+  records: CourtRecordMatch[];
+  hearings: CourtHearingMatch[];
+  recordsWindow: number;
+  hearingsWindow: number;
+  recordsCount: number;
+  hearingsCount: number;
+}
+
 export interface AssistantReminderData {
   type: 'morning-brief' | 'approval' | 'followup' | 'missing-info' | 'review-request';
   eventId?: string;
@@ -219,6 +259,9 @@ export interface CaseDocument {
   uploadedAt: string;
   size: number;
   textContent: string;
+  driveFileId?: string;
+  driveUrl?: string;
+  aiSummary?: string;
 }
 
 export interface CaseChatMessage {
@@ -273,6 +316,8 @@ export interface CaseData {
   chatHistory: CaseChatMessage[];
   activityLog: ActivityLogEntry[];
   paymentPlan?: PaymentPlan;
+  driveFolderId?: string;
+  driveFolderUrl?: string;
   updatedAt: string;
 }
 

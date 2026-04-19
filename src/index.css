@@ -776,6 +776,214 @@ footer {
   margin: 0;
 }
 
+/* Court records card */
+.court-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 14px;
+}
+
+.court-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.court-card h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.court-card .subtitle {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.court-card-stats {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.court-stat {
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.court-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.court-section-title {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: var(--text);
+}
+
+.court-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.court-row {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--bg-elevated) 84%, transparent);
+}
+
+.court-row-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.court-conf {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.court-conf-high {
+  background: #17a464;
+}
+
+.court-conf-medium {
+  background: #cf9800;
+}
+
+.court-conf-low {
+  background: #a86060;
+}
+
+.court-case {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.court-badge {
+  margin-left: auto;
+  font-size: 10px;
+  border-radius: 999px;
+  padding: 2px 7px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.court-badge-filing {
+  border-color: #7582ef44;
+  color: #7a89ff;
+  background: #7a89ff1f;
+}
+
+.court-badge-citation {
+  border-color: #37946d44;
+  color: #43af82;
+  background: #43af821f;
+}
+
+.court-badge-hearing {
+  border-color: #bf7d2540;
+  color: #d18722;
+  background: #d187221f;
+}
+
+.court-hover-link {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.court-hover-link:hover {
+  color: var(--accent);
+}
+
+.court-row-identity {
+  margin-top: 5px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.court-row-meta,
+.court-row-charge,
+.court-row-attorney,
+.court-row-date {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.court-row-charge {
+  color: var(--text);
+}
+
+.court-row-more {
+  color: var(--text-muted);
+}
+
+.court-row-attorney {
+  color: var(--text-muted);
+}
+
+.court-row-unrep {
+  color: #c0722e;
+}
+
+.court-row-date {
+  color: var(--text-muted);
+}
+
+.court-row-source {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.court-row-source:hover {
+  text-decoration: underline;
+}
+
+.court-section-footer {
+  margin: 8px 2px 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+@media (max-width: 760px) {
+  .court-card-header {
+    flex-direction: column;
+  }
+
+  .court-badge {
+    margin-left: 0;
+  }
+}
+
 /* Analysis */
 .analysis-section {
   display: flex;
@@ -2896,6 +3104,47 @@ footer {
   color: var(--text-muted);
 }
 
+.case-doc-drive,
+.organizer-doc-drive {
+  color: var(--accent, #2563eb);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.case-doc-drive:hover,
+.organizer-doc-drive:hover {
+  text-decoration: underline;
+}
+
+.case-docs-drive-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  border-radius: 8px;
+  background: rgba(37, 99, 235, 0.08);
+  color: var(--accent, #2563eb);
+  font-size: 0.85rem;
+  font-weight: 500;
+  text-decoration: none;
+  border: 1px solid rgba(37, 99, 235, 0.2);
+  transition: background 0.15s;
+}
+
+.case-docs-drive-link:hover {
+  background: rgba(37, 99, 235, 0.14);
+}
+
+.case-doc-summary,
+.organizer-doc-summary {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+  line-height: 1.35;
+}
+
 .case-doc-remove {
   background: none;
   border: none;
@@ -3680,6 +3929,292 @@ select.intake-form-input {
 
 .appointment-card-prep-risk {
   border-left: 3px solid var(--danger);
+}
+
+.appointment-card-fresh-intake {
+  position: relative;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.35), 0 12px 28px -16px rgba(99, 102, 241, 0.6);
+  animation: fresh-intake-glow 2.4s ease-in-out 0s 2;
+}
+
+@keyframes fresh-intake-glow {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.35), 0 12px 28px -16px rgba(99, 102, 241, 0.6); }
+  50% { box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.6), 0 18px 40px -14px rgba(99, 102, 241, 0.9); }
+}
+
+.new-lead-ribbon {
+  position: absolute;
+  top: -10px;
+  right: 12px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  box-shadow: 0 4px 12px -4px rgba(99, 102, 241, 0.7);
+  z-index: 1;
+}
+
+.new-lead-ribbon-urgent {
+  background: linear-gradient(135deg, #f97316, #ef4444);
+  box-shadow: 0 4px 12px -4px rgba(239, 68, 68, 0.7);
+}
+
+/* ============ CASES OVERVIEW ============ */
+.cases-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 0 18px;
+  flex-wrap: wrap;
+}
+
+.cases-search {
+  flex: 1;
+  min-width: 240px;
+  padding: 10px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.cases-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.cases-select {
+  padding: 10px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.cases-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cases-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cases-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cases-card-head h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.cases-card-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.cases-flag {
+  font-size: 11px;
+  border-radius: 999px;
+  padding: 3px 8px;
+  border: 1px solid transparent;
+}
+
+.cases-flag-urgent {
+  color: #da5f30;
+  background: rgba(240, 114, 63, 0.12);
+  border-color: rgba(240, 114, 63, 0.25);
+}
+
+.cases-flag-conflict {
+  color: #b36f25;
+  background: rgba(225, 158, 67, 0.12);
+  border-color: rgba(225, 158, 67, 0.25);
+}
+
+.cases-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px 14px;
+}
+
+.cases-k {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.cases-v {
+  margin-top: 3px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.cases-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@media (max-width: 760px) {
+  .cases-card-head {
+    flex-direction: column;
+  }
+
+  .cases-card-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+}
+
+/* ============ DOCUMENT ORGANIZER ============ */
+.document-organizer .organizer-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 16px 0 20px;
+  flex-wrap: wrap;
+}
+
+.organizer-search {
+  flex: 1;
+  min-width: 220px;
+  padding: 10px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.organizer-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.organizer-select {
+  padding: 10px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.organizer-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.organizer-column {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+}
+
+.organizer-column-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.organizer-column-header h3 {
+  margin: 0;
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.organizer-column-icon {
+  font-size: 18px;
+}
+
+.organizer-column-count {
+  background: var(--bg-elevated, rgba(255, 255, 255, 0.04));
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.organizer-doc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.organizer-doc-card {
+  text-align: left;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.organizer-doc-card:hover {
+  border-color: var(--accent);
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.organizer-doc-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.organizer-doc-name {
+  font-weight: 600;
+  font-size: 13.5px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.organizer-doc-matter {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.organizer-doc-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0.8;
 }
 
 /* ============ COLLAPSED SECTIONS & INTAKE COMPACT ============ */

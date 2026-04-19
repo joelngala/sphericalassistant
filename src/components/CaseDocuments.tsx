@@ -8,6 +8,8 @@ interface CaseDocumentsProps {
   onUpload: (file: File) => Promise<void>;
   onRemove: (docId: string) => void;
   uploading: boolean;
+  driveFolderUrl?: string;
+  driveFolderName?: string;
 }
 
 export default function CaseDocuments({
@@ -16,6 +18,8 @@ export default function CaseDocuments({
   onUpload,
   onRemove,
   uploading,
+  driveFolderUrl,
+  driveFolderName,
 }: CaseDocumentsProps) {
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -49,6 +53,22 @@ export default function CaseDocuments({
 
   return (
     <div className="case-docs">
+      {driveFolderUrl && (
+        <a
+          className="case-docs-drive-link"
+          href={driveFolderUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+          </svg>
+          <span>Open matter folder{driveFolderName ? `: ${driveFolderName}` : ''} in Google Drive</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M7 17L17 7M9 7h8v8" />
+          </svg>
+        </a>
+      )}
       <div
         className={`case-docs-upload ${dragOver ? 'drag-over' : ''}`}
         onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
@@ -103,8 +123,25 @@ export default function CaseDocuments({
                         </svg>
                         <div>
                           <span className="case-doc-name">{doc.name}</span>
+                          {doc.aiSummary && (
+                            <span className="case-doc-summary">{doc.aiSummary}</span>
+                          )}
                           <span className="case-doc-meta">
                             {formatSize(doc.size)} &middot; {new Date(doc.uploadedAt).toLocaleDateString()}
+                            {doc.driveUrl && (
+                              <>
+                                {' '}&middot;{' '}
+                                <a
+                                  className="case-doc-drive"
+                                  href={doc.driveUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  Open in Drive
+                                </a>
+                              </>
+                            )}
                           </span>
                         </div>
                       </div>

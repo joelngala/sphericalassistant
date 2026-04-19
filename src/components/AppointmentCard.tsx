@@ -1,5 +1,5 @@
 import type { CalendarEvent, WorkflowStatus } from '../types.ts';
-import { formatEventTime, getWorkflowState, parseServiceType, getAttendeeEmails, getClientNameFromSummary, getEventDateTime } from '../lib/calendar.ts';
+import { formatEventTime, getWorkflowState, parseServiceType, getAttendeeEmails, getClientNameFromSummary, getEventDateTime, isFreshIntake } from '../lib/calendar.ts';
 
 interface AppointmentCardProps {
   event: CalendarEvent;
@@ -36,12 +36,19 @@ export default function AppointmentCard({ event, onClick }: AppointmentCardProps
   const attendees = getAttendeeEmails(event);
   const time = formatEventTime(event);
   const prep = prepInfo(event);
+  const freshIntake = isFreshIntake(event);
+  const urgentIntake = freshIntake && workflow.urgent === true;
 
   return (
     <button
-      className={`appointment-card ${prep ? `appointment-card-prep-${prep.tone}` : ''}`}
+      className={`appointment-card ${prep ? `appointment-card-prep-${prep.tone}` : ''} ${freshIntake ? 'appointment-card-fresh-intake' : ''}`}
       onClick={onClick}
     >
+      {freshIntake && (
+        <span className={`new-lead-ribbon ${urgentIntake ? 'new-lead-ribbon-urgent' : ''}`}>
+          {urgentIntake ? '🔥 URGENT LEAD' : '✨ NEW LEAD'}
+        </span>
+      )}
       <div className="card-time">{time}</div>
       <div className="card-content">
         <div className="card-service">{serviceType}</div>

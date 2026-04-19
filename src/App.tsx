@@ -54,11 +54,13 @@ import Login from './components/Login.tsx';
 import Header from './components/Header.tsx';
 import Dashboard from './components/Dashboard.tsx';
 import AppointmentDetail from './components/AppointmentDetail.tsx';
+import DocumentOrganizer from './components/DocumentOrganizer.tsx';
+import CasesOverview from './components/CasesOverview.tsx';
 import DraftPreview from './components/DraftPreview.tsx';
 import NewAppointmentModal from './components/NewAppointmentModal.tsx';
 import EmailPreferencesModal from './components/EmailPreferencesModal.tsx';
 
-type View = 'login' | 'dashboard' | 'detail';
+type View = 'login' | 'dashboard' | 'detail' | 'organizer' | 'cases';
 
 export default function App() {
   const [user, setUser] = useState<GoogleUser | null>(null);
@@ -870,6 +872,8 @@ ${emailPreferences.businessName || ''}`.trim();
             onRefresh={loadEvents}
             onSelectEvent={handleSelectEvent}
             onCreateAppointment={handleOpenNewAppointmentModal}
+            onOpenCases={() => setView('cases')}
+            onOpenOrganizer={() => setView('organizer')}
             insights={insights}
             insightsLoading={insightsLoading}
             onGenerateInsights={handleGenerateInsights}
@@ -881,6 +885,29 @@ ${emailPreferences.businessName || ''}`.trim();
             onCreateActionReminder={handleCreateActionReminder}
             creatingReminderId={creatingReminder}
             firmName={emailPreferences.businessName || 'Your Firm'}
+          />
+        </>
+      )}
+
+      {view === 'organizer' && user && (
+        <>
+          <Header user={user} onLogout={handleLogout} onOpenSettings={handleOpenPreferencesModal} onBack={() => setView('dashboard')} showBack />
+          <DocumentOrganizer
+            events={events}
+            onOpenMatter={handleSelectEvent}
+            onBack={() => setView('dashboard')}
+            accessToken={user.accessToken}
+          />
+        </>
+      )}
+
+      {view === 'cases' && user && (
+        <>
+          <Header user={user} onLogout={handleLogout} onOpenSettings={handleOpenPreferencesModal} onBack={() => setView('dashboard')} showBack />
+          <CasesOverview
+            events={events}
+            accessToken={user.accessToken}
+            onOpenMatter={handleSelectEvent}
           />
         </>
       )}
@@ -915,6 +942,7 @@ ${emailPreferences.businessName || ''}`.trim();
             actionResults={actionResults}
             onAction={handleAction}
             onReviseAsset={handleReviseAsset}
+            accessToken={user.accessToken}
           />
         </>
       )}

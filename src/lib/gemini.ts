@@ -248,6 +248,19 @@ export async function categorizeDocument(
   return res.category;
 }
 
+export async function summarizeDocument(
+  fileName: string,
+  textPreview: string,
+  industry: IndustryType,
+): Promise<string> {
+  const res = await postJson<{ summary: string }>('/summarize-document', {
+    fileName,
+    textPreview,
+    industry,
+  });
+  return res.summary || '';
+}
+
 export async function suggestTasks(
   caseTitle: string,
   caseDescription: string,

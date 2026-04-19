@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import type {
   CalendarEvent,
   ClientContact,
@@ -6,12 +6,29 @@ import type {
   WorkflowState,
   ActionResultStatus,
   CaseData,
+  CaseDocument,
   DocCategory,
   IndustryType,
   ActivityLogEntry,
   BillingInterval,
 } from '../types.ts';
-import { formatEventTime, parseServiceType, getWorkflowState, getClientNameFromSummary, getLinkedDocuments, getEventDateTime } from '../lib/calendar.ts';
+import { formatEventTime, parseServiceType, getWorkflowState, getClientNameFromSummary, getLinkedDocuments, getEventDateTime, getCaseNumberFromEvent, getCourtRecords } from '../lib/calendar.ts';
+import CourtRecordsCard from './CourtRecordsCard.tsx';
+import {
+  ensureMatterFolder,
+  uploadFileToDrive,
+  buildMatterFolderName,
+  findMatterFolder,
+  listMatterFolderFiles,
+  mapDriveFilesToCaseDocuments,
+  trashDriveFile,
+} from '../lib/docs.ts';
+import {
+  syncMatterRow,
+  syncDocumentRow,
+  removeDocumentRow,
+  syncInBackground,
+} from '../lib/caseSheet.ts';
 import {
   loadCase,
   addTask,
@@ -30,6 +47,7 @@ import {
   setPaymentPlan,
   updatePaymentPlan,
   clearPaymentPlan,
+  setDriveFolder,
 } from '../lib/caseStore.ts';
 import {
   createMockPlan,
@@ -53,7 +71,7 @@ import {
 } from '../lib/stripeClient.ts';
 import { parseDocument } from '../lib/parseDocument.ts';
 import { generateCaseSummaryPdf } from '../lib/generatePdf.ts';
-import { sendCaseChat, categorizeDocument, suggestTasks } from '../lib/gemini.ts';
+import { sendCaseChat, categorizeDocument, summarizeDocument, suggestTasks } from '../lib/gemini.ts';
 import ClientPanel from './ClientPanel.tsx';
 import CaseTasks from './CaseTasks.tsx';
 import type { TaskActionType } from './CaseTasks.tsx';
@@ -100,6 +118,7 @@ interface AppointmentDetailProps {
   actionResults: Record<string, ActionResultStatus>;
   onAction: (actionType: string) => void;
   onReviseAsset: (assetType: 'doc' | 'slides', feedback: string) => Promise<{ type: 'doc' | 'slides'; url: string; title: string }>;
+  accessToken: string;
 }
 
 const ACTION_ICONS: Record<string, string> = {
@@ -159,6 +178,7 @@ export default function AppointmentDetail({
   actionResults,
   onAction,
   onReviseAsset,
+  accessToken,
 }: AppointmentDetailProps) {
   const [activeTab, setActiveTab] = useState<CaseTab>('details');
   const [manualEmail, setManualEmail] = useState('');
@@ -174,14 +194,20 @@ export default function AppointmentDetail({
   const [chatRevisionTarget, setChatRevisionTarget] = useState<'doc' | 'slides' | null>(null);
   const [billingCreating, setBillingCreating] = useState(false);
   const [billingSyncing, setBillingSyncing] = useState(false);
+  const [driveDocuments, setDriveDocuments] = useState<CaseDocument[] | null>(null);
   const liveBilling = isStripeLiveMode();
 
   const workflow = getWorkflowState(event);
   const serviceType = parseServiceType(event.summary);
   const suggestedClientName = getClientNameFromSummary(event.summary);
   const clientName = contact?.name || suggestedClientName || 'Client';
+  const caseNumber = getCaseNumberFromEvent(event);
+  const matterFolderCode = !caseNumber
+    ? (event.extendedProperties?.private?.sphericalMatterType || serviceType || 'gen')
+    : undefined;
   const time = formatEventTime(event);
   const eventDate = getEventDateTime(event);
+  const courtRecords = getCourtRecords(event);
   const industry: IndustryType = caseData.industry || getIndustry();
 
   const refreshCase = useCallback(() => {
@@ -198,6 +224,55 @@ export default function AppointmentDetail({
     setEditingDescription(false);
   }, [event.id, event.description]);
 
+  const loadDriveDocuments = useCallback(async () => {
+    if (!accessToken) return;
+    try {
+      const folder = await findMatterFolder(accessToken, clientName, caseNumber, matterFolderCode);
+      if (!folder) {
+        setDriveDocuments([]);
+        return;
+      }
+      setDriveFolder(event.id, folder.id, folder.url);
+      const files = await listMatterFolderFiles(accessToken, folder.id);
+      setDriveDocuments(mapDriveFilesToCaseDocuments(files));
+      refreshCase();
+    } catch (err) {
+      console.warn('Failed to load matter docs from Drive', err);
+      setDriveDocuments(null);
+    }
+  }, [accessToken, caseNumber, clientName, event.id, matterFolderCode, refreshCase]);
+
+  useEffect(() => {
+    setDriveDocuments(null);
+    void loadDriveDocuments();
+  }, [loadDriveDocuments, event.id]);
+
+  const visibleDocuments = useMemo(() => {
+    if (driveDocuments === null) return caseData.documents;
+
+    const localByDriveId = new Map<string, CaseDocument>();
+    for (const doc of caseData.documents) {
+      if (doc.driveFileId) localByDriveId.set(doc.driveFileId, doc);
+    }
+
+    const merged: CaseDocument[] = driveDocuments.map((remote) => {
+      const local = remote.driveFileId ? localByDriveId.get(remote.driveFileId) : undefined;
+      return {
+        ...remote,
+        id: local?.id || remote.id,
+        category: local?.category || remote.category,
+        aiSummary: local?.aiSummary || remote.aiSummary,
+        textContent: local?.textContent || '',
+      };
+    });
+
+    const remoteIds = new Set(driveDocuments.map((d) => d.driveFileId || d.id));
+    const localOnly = caseData.documents.filter((doc) => !doc.driveFileId || !remoteIds.has(doc.driveFileId));
+    return [...merged, ...localOnly].sort(
+      (a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime(),
+    );
+  }, [driveDocuments, caseData.documents]);
+
   async function handleSaveDescription() {
     setSavingDescription(true);
     try {
@@ -213,6 +288,13 @@ export default function AppointmentDetail({
   useEffect(() => {
     refreshCase();
   }, [event.extendedProperties?.private?.sphericalLinkedDocs, refreshCase]);
+
+  // Sync matter row to Case Database sheet whenever caseData or event changes.
+  // Runs in background so UI mutations stay instant.
+  useEffect(() => {
+    if (!accessToken) return;
+    syncInBackground(() => syncMatterRow(accessToken, event), `matter ${event.id}`);
+  }, [accessToken, event, caseData.updatedAt]);
 
   // --- Task handlers ---
   function handleToggleTask(taskId: string) {
@@ -288,9 +370,35 @@ export default function AppointmentDetail({
     setUploading(true);
     try {
       const textContent = await parseDocument(file);
-      const category = await categorizeDocument(file.name, textContent, industry) as DocCategory;
-      addDocument(event.id, file.name, category, textContent, file.size);
+      const [categoryRaw, aiSummary] = await Promise.all([
+        categorizeDocument(file.name, textContent, industry),
+        summarizeDocument(file.name, textContent, industry).catch(() => ''),
+      ]);
+      const category = categoryRaw as DocCategory;
+
+      let driveFileId: string | undefined;
+      let driveUrl: string | undefined;
+      try {
+        const folder = await ensureMatterFolder(accessToken, clientName, caseNumber, matterFolderCode);
+        setDriveFolder(event.id, folder.id, folder.url);
+        const uploaded = await uploadFileToDrive(accessToken, file, folder.id, {
+          category,
+          uploadedAt: new Date().toISOString(),
+        });
+        driveFileId = uploaded.id;
+        driveUrl = uploaded.url;
+      } catch (driveErr) {
+        console.error('Drive upload failed — keeping local copy only:', driveErr);
+      }
+
+      const doc = addDocument(event.id, file.name, category, textContent, file.size, {
+        driveFileId,
+        driveUrl,
+        aiSummary,
+      });
       refreshCase();
+      syncInBackground(() => syncDocumentRow(accessToken, event, doc), `doc ${doc.id}`);
+      void loadDriveDocuments();
     } catch (err) {
       console.error('Upload failed:', err);
     } finally {
@@ -299,8 +407,20 @@ export default function AppointmentDetail({
   }
 
   function handleRemoveDocument(docId: string) {
-    removeDocument(event.id, docId);
-    refreshCase();
+    const localDoc = caseData.documents.find((d) => d.id === docId);
+    const visibleDoc = visibleDocuments.find((d) => d.id === docId);
+    const driveFileId = localDoc?.driveFileId || visibleDoc?.driveFileId;
+    if (driveFileId) {
+      syncInBackground(async () => {
+        await trashDriveFile(accessToken, driveFileId);
+        await loadDriveDocuments();
+      }, `doc-drive-remove ${driveFileId}`);
+    }
+    if (localDoc) {
+      removeDocument(event.id, docId);
+      refreshCase();
+      syncInBackground(() => removeDocumentRow(accessToken, docId), `doc-remove ${docId}`);
+    }
   }
 
   // --- Chat handlers ---
@@ -718,6 +838,7 @@ export default function AppointmentDetail({
         {/* Details tab */}
         {activeTab === 'details' && (
           <div className="case-tab-content">
+            {courtRecords && <CourtRecordsCard payload={courtRecords} />}
             <div className="detail-notes">
               <div className="detail-notes-header">
                 <label>Notes</label>
@@ -923,11 +1044,13 @@ export default function AppointmentDetail({
         {activeTab === 'docs' && (
           <div className="case-tab-content">
             <CaseDocuments
-              documents={caseData.documents}
+              documents={visibleDocuments}
               industry={industry}
               onUpload={handleUploadDocument}
               onRemove={handleRemoveDocument}
               uploading={uploading}
+              driveFolderUrl={caseData.driveFolderUrl}
+              driveFolderName={buildMatterFolderName(clientName, caseNumber, matterFolderCode)}
             />
           </div>
         )}

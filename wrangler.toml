@@ -21,8 +21,7 @@ binding = "INTAKE_STORE"
 id = "ce979878d4f749e7af5c07bbc75c3d5a"
 preview_id = "70c598f6012f45c2bfc9a06cf442800e"
 
-# Add this second binding after creating CALENDAR_STORE namespaces:
-# [[kv_namespaces]]
-# binding = "CALENDAR_STORE"
-# id = "your-calendar-store-id"
-# preview_id = "your-calendar-store-preview-id"
+[[kv_namespaces]]
+binding = "CALENDAR_STORE"
+id = "301c570797534de2836fa4862e2c9a49"
+preview_id = "b3fd8ca506fb41968d75495528f48c57"
