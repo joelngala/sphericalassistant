@@ -1,7 +1,13 @@
 GEMINI_API_KEY=your-gemini-key
+# Optional Claude fallback — used automatically if a Gemini request fails.
+ANTHROPIC_API_KEY=sk-ant-your-anthropic-key
 STRIPE_SECRET_KEY=sk_test_your_secret_key
 
 # Google OAuth (Web application type) — used by the intake form to create
 # calendar events on the owner's behalf via the offline/refresh-token flow.
 GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=your-client-secret
+
+# Shared secret for machine-to-machine calendar ingest endpoint (/calendars/ingest)
+# Set the same value in GitHub Actions as INGEST_SECRET when you add the cron job.
+INGEST_SECRET=replace-with-a-long-random-string

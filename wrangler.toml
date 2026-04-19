@@ -13,8 +13,16 @@ GOOGLE_CLIENT_ID = "873310561840-mlkjkmhkva583s71spj8ufqc31bavun7.apps.googleuse
 # Create the namespaces once with:
 #   npx wrangler kv namespace create INTAKE_STORE
 #   npx wrangler kv namespace create INTAKE_STORE --preview
+#   npx wrangler kv namespace create CALENDAR_STORE
+#   npx wrangler kv namespace create CALENDAR_STORE --preview
 # then paste the returned IDs below.
 [[kv_namespaces]]
 binding = "INTAKE_STORE"
 id = "ce979878d4f749e7af5c07bbc75c3d5a"
 preview_id = "70c598f6012f45c2bfc9a06cf442800e"
+
+# Add this second binding after creating CALENDAR_STORE namespaces:
+# [[kv_namespaces]]
+# binding = "CALENDAR_STORE"
+# id = "your-calendar-store-id"
+# preview_id = "your-calendar-store-preview-id"

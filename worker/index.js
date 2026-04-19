@@ -1,13 +1,22 @@
+import { lookupHillsboroughRecords } from './hillsborough-lookup.js';
+
 const GEMINI_MODEL = 'gemini-2.5-pro';
 const GEMINI_INTAKE_MODEL = 'gemini-2.5-flash';
+// Claude fallback — used automatically when a Gemini request fails and
+// ANTHROPIC_API_KEY is configured. Sonnet handles the same JSON-producing
+// prompts well enough to keep the demo running if Gemini is down.
+const CLAUDE_MODEL = 'claude-sonnet-4-6';
+const CLAUDE_MAX_TOKENS = 4096;
 const DEFAULT_ALLOWED_ORIGINS = [
   'https://joelngala.github.io',
   'http://localhost:5173',
   'http://127.0.0.1:5173',
 ];
-// Origins that can hit /intake-chat and /intake without being in ALLOWED_ORIGINS —
-// always allowed because the intake form is public and meant to be embedded anywhere.
-const PUBLIC_INTAKE_ROUTES = new Set(['/intake-chat', '/intake']);
+// Origins that can hit these routes without being in ALLOWED_ORIGINS.
+// Intake routes are public because the form is meant to be embedded anywhere.
+// /calendars/ingest is a machine-to-machine endpoint (GitHub Actions cron)
+// protected by a Bearer token — it has no browser origin.
+const PUBLIC_INTAKE_ROUTES = new Set(['/intake-chat', '/intake', '/calendars/ingest']);
 
 // Single-tenant refresh token key — the firm deploys one worker per office.
 const REFRESH_TOKEN_KEY = 'google:refresh_token';
@@ -30,7 +39,13 @@ export default {
 
     if (request.method === 'GET' && url.pathname === '/health') {
       return jsonResponse(
-        { ok: true, configured: Boolean(env.GEMINI_API_KEY), stripe: Boolean(env.STRIPE_SECRET_KEY) },
+        {
+          ok: true,
+          configured: Boolean(env.GEMINI_API_KEY) || Boolean(env.ANTHROPIC_API_KEY),
+          gemini: Boolean(env.GEMINI_API_KEY),
+          claude: Boolean(env.ANTHROPIC_API_KEY),
+          stripe: Boolean(env.STRIPE_SECRET_KEY),
+        },
         200,
         allowedOrigin
       );
@@ -73,15 +88,30 @@ export default {
       }
     }
 
-    if (!env.GEMINI_API_KEY) {
-      return jsonResponse({ error: 'Worker secret GEMINI_API_KEY is not set' }, 500, allowedOrigin);
+    if (request.method === 'POST' && url.pathname === '/calendars/ingest') {
+      try {
+        const result = await ingestCalendars(request, env);
+        return jsonResponse(result, 200, allowedOrigin);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Calendar ingest failed';
+        const status = /unauthorized/i.test(message) ? 401 : 400;
+        return jsonResponse({ error: message }, status, allowedOrigin);
+      }
+    }
+
+    if (!env.GEMINI_API_KEY && !env.ANTHROPIC_API_KEY) {
+      return jsonResponse(
+        { error: 'No AI provider configured — set GEMINI_API_KEY or ANTHROPIC_API_KEY' },
+        500,
+        allowedOrigin
+      );
     }
 
     try {
       const body = await request.json();
 
       if (url.pathname === '/intake-chat') {
-        const result = await intakeChat(env.GEMINI_API_KEY, body);
+        const result = await intakeChat(env, body);
         return jsonResponse(result, 200, allowedOrigin);
       }
 
@@ -106,62 +136,62 @@ export default {
       }
 
       if (url.pathname === '/analyze') {
-        const result = await analyzeAppointment(env.GEMINI_API_KEY, body);
+        const result = await analyzeAppointment(env, body);
         return jsonResponse(result, 200, allowedOrigin);
       }
 
       if (url.pathname === '/slides-outline') {
-        const result = await generateSlidesOutline(env.GEMINI_API_KEY, body);
+        const result = await generateSlidesOutline(env, body);
         return jsonResponse(result, 200, allowedOrigin);
       }
 
       if (url.pathname === '/doc-outline') {
-        const result = await generateDocOutline(env.GEMINI_API_KEY, body);
+        const result = await generateDocOutline(env, body);
         return jsonResponse(result, 200, allowedOrigin);
       }
 
       if (url.pathname === '/draft') {
-        const result = await generateDraft(env.GEMINI_API_KEY, body);
+        const result = await generateDraft(env, body);
         return jsonResponse(result, 200, allowedOrigin);
       }
 
       if (url.pathname === '/estimate') {
-        const result = await generateEstimate(env.GEMINI_API_KEY, body);
+        const result = await generateEstimate(env, body);
         return jsonResponse(result, 200, allowedOrigin);
       }
 
       if (url.pathname === '/refine-draft') {
-        const result = await refineDraft(env.GEMINI_API_KEY, body);
+        const result = await refineDraft(env, body);
         return jsonResponse(result, 200, allowedOrigin);
       }
 
       if (url.pathname === '/business-insights') {
-        const result = await generateBusinessInsights(env.GEMINI_API_KEY, body);
+        const result = await generateBusinessInsights(env, body);
         return jsonResponse(result, 200, allowedOrigin);
       }
 
       if (url.pathname === '/morning-brief') {
-        const result = await generateMorningBrief(env.GEMINI_API_KEY, body);
+        const result = await generateMorningBrief(env, body);
         return jsonResponse(result, 200, allowedOrigin);
       }
 
       if (url.pathname === '/case-chat') {
-        const result = await caseChatHandler(env.GEMINI_API_KEY, body);
+        const result = await caseChatHandler(env, body);
         return jsonResponse(result, 200, allowedOrigin);
       }
 
       if (url.pathname === '/categorize-document') {
-        const result = await categorizeDocument(env.GEMINI_API_KEY, body);
+        const result = await categorizeDocument(env, body);
         return jsonResponse(result, 200, allowedOrigin);
       }
 
       if (url.pathname === '/suggest-tasks') {
-        const result = await suggestTasks(env.GEMINI_API_KEY, body);
+        const result = await suggestTasks(env, body);
         return jsonResponse(result, 200, allowedOrigin);
       }
 
       if (url.pathname === '/task-email') {
-        const result = await generateTaskEmail(env.GEMINI_API_KEY, body);
+        const result = await generateTaskEmail(env, body);
         return jsonResponse(result, 200, allowedOrigin);
       }
 
@@ -210,7 +240,28 @@ function stripJsonFences(text) {
   return text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
 }
 
-async function callGemini(apiKey, model, body) {
+async function callGemini(env, model, body) {
+  const geminiKey = env?.GEMINI_API_KEY;
+  const claudeKey = env?.ANTHROPIC_API_KEY;
+
+  if (geminiKey) {
+    try {
+      return await callGeminiDirect(geminiKey, model, body);
+    } catch (error) {
+      if (!claudeKey) throw error;
+      console.warn(`[ai-fallback] Gemini failed (${error.message}) — falling back to Claude`);
+      // Fall through to Claude. Surface Gemini's failure only if Claude also fails.
+    }
+  }
+
+  if (claudeKey) {
+    return await callClaude(claudeKey, body);
+  }
+
+  throw new Error('No AI provider configured');
+}
+
+async function callGeminiDirect(apiKey, model, body) {
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
     {
@@ -236,9 +287,77 @@ async function callGemini(apiKey, model, body) {
   return text;
 }
 
+// Translate a Gemini-style body (contents + generationConfig) into an Anthropic
+// Messages API call so every existing handler keeps its prompt shape and JSON-mode
+// expectation — we just route to Claude when Gemini is unavailable.
+async function callClaude(apiKey, body) {
+  const rawContents = Array.isArray(body?.contents) ? body.contents : [];
+  const messages = [];
+  for (const entry of rawContents) {
+    const role = entry?.role === 'model' ? 'assistant' : 'user';
+    const content = (entry?.parts || [])
+      .map((part) => part?.text || '')
+      .join('')
+      .trim();
+    if (!content) continue;
+    const last = messages[messages.length - 1];
+    if (last && last.role === role) {
+      last.content += `\n\n${content}`;
+    } else {
+      messages.push({ role, content });
+    }
+  }
+  while (messages.length && messages[0].role !== 'user') {
+    messages.shift();
+  }
+  if (messages.length === 0) {
+    throw new Error('Claude request has no user content');
+  }
+
+  const wantsJson = body?.generationConfig?.responseMimeType === 'application/json';
+  const temperature =
+    typeof body?.generationConfig?.temperature === 'number'
+      ? body.generationConfig.temperature
+      : 0.3;
+
+  const requestBody = {
+    model: CLAUDE_MODEL,
+    max_tokens: CLAUDE_MAX_TOKENS,
+    temperature,
+    messages,
+  };
+  if (wantsJson) {
+    requestBody.system =
+      'Respond with ONLY a valid JSON value matching the schema the user asked for. No markdown fences, no commentary, no text before or after the JSON.';
+  }
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message = payload?.error?.message || 'Claude request failed';
+    throw new Error(message);
+  }
+
+  const text = (payload?.content || [])
+    .map((part) => part?.text || '')
+    .join('')
+    .trim();
+  if (!text) throw new Error('Claude returned an empty response');
+  return text;
+}
+
 // --- Handlers ---
 
-async function analyzeAppointment(apiKey, payload) {
+async function analyzeAppointment(env, payload) {
   const { appointment, client, businessContext } = payload;
 
   const prompt = `You are an AI assistant for in-home service businesses. Analyze this upcoming appointment and client information, then suggest specific actions the business owner should take.
@@ -278,7 +397,7 @@ Valid action types: confirm, reminder, followup, estimate, contact, custom.
 Valid priorities: high, medium, low.
 Prioritize actions based on how soon the appointment is. Always suggest confirmation if not yet confirmed. Include specific, actionable advice based on the service type and client notes.`;
 
-  const text = await callGemini(apiKey, GEMINI_MODEL, {
+  const text = await callGemini(env, GEMINI_MODEL, {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: { temperature: 0.3, responseMimeType: 'application/json' },
   });
@@ -290,7 +409,7 @@ Prioritize actions based on how soon the appointment is. Always suggest confirma
   }
 }
 
-async function generateSlidesOutline(apiKey, payload) {
+async function generateSlidesOutline(env, payload) {
   const { appointment, client, analysis, businessContext, feedback, caseContext } = payload || {};
 
   const prompt = `You are a helpful assistant that produces a Google Slides outline for a professional. The user could be in any profession — lawyer, realtor, therapist, consultant, contractor, teacher, founder, account manager, etc. Do not assume any industry.
@@ -367,7 +486,7 @@ STYLE GUARDRAILS:
 - Match the tone to the deck type (persuasive for pitches, neutral for updates, didactic for teaching).
 - No markdown, no emojis, no prose outside the JSON object.`;
 
-  const text = await callGemini(apiKey, GEMINI_MODEL, {
+  const text = await callGemini(env, GEMINI_MODEL, {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: { temperature: 0.35, responseMimeType: 'application/json' },
   });
@@ -427,7 +546,7 @@ STYLE GUARDRAILS:
   };
 }
 
-async function generateDocOutline(apiKey, payload) {
+async function generateDocOutline(env, payload) {
   const { appointment, client, analysis, businessContext, feedback, caseContext } = payload || {};
 
   const prompt = `You are a helpful assistant that writes a Google Doc for a professional to use for a specific appointment and goal. The user could be in any profession — lawyer, realtor, therapist, consultant, contractor, teacher, founder, account manager, etc. Do not assume any industry.
@@ -507,7 +626,7 @@ STYLE GUARDRAILS:
 - Match the tone to the document type (formal for contracts, neutral for notes, warm for letters).
 - No markdown, no emojis, no text outside the JSON object.`;
 
-  const text = await callGemini(apiKey, GEMINI_MODEL, {
+  const text = await callGemini(env, GEMINI_MODEL, {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: { temperature: 0.3, responseMimeType: 'application/json' },
   });
@@ -585,7 +704,7 @@ function formatDocuments(documents) {
     .join('\n\n');
 }
 
-async function generateDraft(apiKey, payload) {
+async function generateDraft(env, payload) {
   const { type, appointment, client, preferences } = payload;
 
   const typeInstructions = {
@@ -624,7 +743,7 @@ Return a JSON object:
   "body": "Full email body text. Use plain text, no HTML. Be professional yet friendly. Sign off with the business name."
 }`;
 
-  const text = await callGemini(apiKey, GEMINI_MODEL, {
+  const text = await callGemini(env, GEMINI_MODEL, {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: { temperature: 0.4, responseMimeType: 'application/json' },
   });
@@ -636,7 +755,7 @@ Return a JSON object:
   }
 }
 
-async function generateTaskEmail(apiKey, payload) {
+async function generateTaskEmail(env, payload) {
   const { taskGoal, appointment, client, preferences } = payload || {};
 
   const prompt = `You are a helpful assistant drafting a professional email on behalf of the user. The user could be in any profession — lawyer, realtor, therapist, consultant, contractor, teacher, founder, account manager, etc. Do not assume any industry.
@@ -678,7 +797,7 @@ Return ONLY a JSON object:
   "body": "Full email body text."
 }`;
 
-  const text = await callGemini(apiKey, GEMINI_MODEL, {
+  const text = await callGemini(env, GEMINI_MODEL, {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: { temperature: 0.4, responseMimeType: 'application/json' },
   });
@@ -690,7 +809,7 @@ Return ONLY a JSON object:
   }
 }
 
-async function generateEstimate(apiKey, payload) {
+async function generateEstimate(env, payload) {
   const { serviceType, details, client } = payload;
 
   const prompt = `You are a professional estimator for an in-home service business.
@@ -712,7 +831,7 @@ Generate a professional service estimate. Return a JSON object:
 
 Use realistic price ranges for the service type. Include a disclaimer that final pricing may vary based on actual conditions.`;
 
-  const text = await callGemini(apiKey, GEMINI_MODEL, {
+  const text = await callGemini(env, GEMINI_MODEL, {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: { temperature: 0.3, responseMimeType: 'application/json' },
   });
@@ -724,7 +843,7 @@ Use realistic price ranges for the service type. Include a disclaimer that final
   }
 }
 
-async function refineDraft(apiKey, payload) {
+async function refineDraft(env, payload) {
   const { instruction, draft, appointment, client, preferences } = payload;
 
   const prompt = `You are a professional email assistant for an in-home service business.
@@ -762,7 +881,7 @@ Return a JSON object:
   "body": "Updated plain-text email body"
 }`;
 
-  const text = await callGemini(apiKey, GEMINI_MODEL, {
+  const text = await callGemini(env, GEMINI_MODEL, {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: { temperature: 0.4, responseMimeType: 'application/json' },
   });
@@ -774,7 +893,7 @@ Return a JSON object:
   }
 }
 
-async function generateBusinessInsights(apiKey, payload) {
+async function generateBusinessInsights(env, payload) {
   const { events, preferences } = payload;
 
   const prompt = `You are an AI chief of staff for a small service business. Review the upcoming calendar activity and produce concise business patterns, operational risks, and recommended automations.
@@ -810,7 +929,7 @@ Return a JSON object:
 Valid impact values: growth, risk, ops.
 Keep the response practical and tied to small business outcomes.`;
 
-  const text = await callGemini(apiKey, GEMINI_MODEL, {
+  const text = await callGemini(env, GEMINI_MODEL, {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: { temperature: 0.3, responseMimeType: 'application/json' },
   });
@@ -822,7 +941,7 @@ Keep the response practical and tied to small business outcomes.`;
   }
 }
 
-async function generateMorningBrief(apiKey, payload) {
+async function generateMorningBrief(env, payload) {
   const { events, preferences } = payload;
 
   const prompt = `You are an AI operations chief of staff. Create a morning brief for today's schedule for the business owner.
@@ -850,7 +969,7 @@ Return a JSON object:
 
 Be specific, operational, and concise.`;
 
-  const text = await callGemini(apiKey, GEMINI_MODEL, {
+  const text = await callGemini(env, GEMINI_MODEL, {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: { temperature: 0.3, responseMimeType: 'application/json' },
   });
@@ -877,7 +996,7 @@ const INTAKE_REQUIRED_FIELDS = [
 
 const INTAKE_CONTACT_PRIORITY_FIELDS = ['fullName', 'phone', 'email'];
 
-async function intakeChat(apiKey, payload) {
+async function intakeChat(env, payload) {
   const { messages = [], answers = {}, firmName = 'the firm' } = payload || {};
 
   const transcript = messages
@@ -946,7 +1065,7 @@ Return a JSON object with EXACTLY this shape:
 
 Set done=true ONLY when every required field has a non-empty value. When done=true, the reply should be a brief acknowledgment like "Thanks, I've got everything I need. Let me recap…" followed by a short recap, and include the summary field.`;
 
-  const text = await callGemini(apiKey, GEMINI_INTAKE_MODEL, {
+  const text = await callGemini(env, GEMINI_INTAKE_MODEL, {
     contents: [{ role: 'user', parts: [{ text: systemPrompt }] }],
     generationConfig: { temperature: 0.5, responseMimeType: 'application/json' },
   });
@@ -1031,13 +1150,40 @@ async function submitIntake(env, payload) {
     throw error;
   }
 
-  // Run contact conflict check and Perplexity research in parallel
-  const [conflictHit, research] = await Promise.all([
+  // Run contact conflict check, Perplexity research, and Hillsborough
+  // court-records lookup in parallel. The court lookup only fires for
+  // Florida/Hillsborough criminal matters; elsewhere it resolves to null.
+  const courtLookupPromise = shouldRunHillsboroughLookup(answers)
+    ? lookupHillsboroughRecords(answers).catch((error) => ({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      }))
+    : Promise.resolve(null);
+
+  const upcomingHearingsPromise = shouldRunHillsboroughLookup(answers)
+    ? lookupUpcomingHillsboroughHearings(env, answers).catch((error) => ({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      }))
+    : Promise.resolve(null);
+
+  const [conflictHit, research, courtLookup, upcomingHearings] = await Promise.all([
     checkContactConflict(accessToken, answers.opposingParty),
     researchCase(env.PERPLEXITY_API_KEY, answers),
+    courtLookupPromise,
+    upcomingHearingsPromise,
   ]);
 
-  const event = buildCalendarEventPayload({ answers, transcript, summary, firmId, conflictHit, research });
+  const event = buildCalendarEventPayload({
+    answers,
+    transcript,
+    summary,
+    firmId,
+    conflictHit,
+    research,
+    courtLookup,
+    upcomingHearings,
+  });
 
   const calendarResponse = await fetch(
     'https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=none',
@@ -1066,8 +1212,367 @@ async function submitIntake(env, payload) {
     urgent: answers?.urgent === 'yes',
     conflictFlagged: Boolean(conflictHit),
     researchFound: Boolean(research?.text),
+    courtMatches: courtLookup?.ok ? courtLookup.matchCount || 0 : 0,
+    upcomingHearingMatches: upcomingHearings?.ok ? upcomingHearings.matchCount || 0 : 0,
     receivedAt: new Date().toISOString(),
   };
+}
+
+// --- Hillsborough court-calendar ingest ---
+// GitHub Actions runs the Node scraper nightly and POSTs parsed calendar
+// sessions here. We verify a shared-secret Bearer token, validate shape,
+// and write per-session JSON to CALENDAR_STORE KV so /intake can read it.
+//
+// Expected body shape matches scraper's fetchCalendarsForDate output:
+//   { type: "felony"|"misd"|"traffic", date: "YYYY-MM-DD",
+//     sessions: [ { pdf, url, session, caseCount, cases } ] }
+const CALENDAR_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
+const ALLOWED_CALENDAR_TYPES = new Set(['felony', 'misd', 'traffic']);
+const UPCOMING_CALENDAR_TYPES = ['felony', 'misd', 'traffic'];
+const UPCOMING_LOOKAHEAD_DAYS = 14;
+const CALENDAR_MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+async function ingestCalendars(request, env) {
+  const expected = env.INGEST_SECRET;
+  if (!expected) {
+    throw new Error('INGEST_SECRET is not configured on the worker');
+  }
+
+  const authHeader = request.headers.get('Authorization') || '';
+  const bearer = authHeader.toLowerCase().startsWith('bearer ')
+    ? authHeader.slice(7).trim()
+    : '';
+  if (!bearer || bearer !== expected) {
+    throw new Error('Unauthorized');
+  }
+
+  if (!env.CALENDAR_STORE) {
+    throw new Error(
+      'CALENDAR_STORE KV namespace is not bound — run wrangler kv namespace create CALENDAR_STORE'
+    );
+  }
+
+  const body = await request.json().catch(() => null);
+  if (!body || typeof body !== 'object') {
+    throw new Error('Body must be a JSON object');
+  }
+
+  const type = String(body.type || '').toLowerCase();
+  const date = String(body.date || '').trim();
+  const sessions = Array.isArray(body.sessions) ? body.sessions : null;
+
+  if (!ALLOWED_CALENDAR_TYPES.has(type)) {
+    throw new Error(`Invalid type "${body.type}" — expected felony|misd|traffic`);
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error(`Invalid date "${body.date}" — expected YYYY-MM-DD`);
+  }
+  if (!sessions) {
+    throw new Error('sessions array is required');
+  }
+
+  const ingestedAt = new Date().toISOString();
+  let written = 0;
+  let caseTotal = 0;
+  const errors = [];
+
+  for (const session of sessions) {
+    const pdfName = session?.pdf;
+    if (!pdfName || typeof pdfName !== 'string') {
+      errors.push({ pdf: pdfName || '(missing)', error: 'missing pdf name' });
+      continue;
+    }
+    if (session.error) {
+      // Scraper failed on this PDF — preserve the error in KV so the
+      // lawyer-side UI can surface it instead of silently missing cases.
+      const key = buildSessionKey(type, date, pdfName);
+      await env.CALENDAR_STORE.put(
+        key,
+        JSON.stringify({ type, date, pdf: pdfName, error: session.error, ingestedAt }),
+        { expirationTtl: CALENDAR_SESSION_TTL_SECONDS }
+      );
+      written++;
+      continue;
+    }
+
+    const cases = Array.isArray(session.cases) ? session.cases : [];
+    const payload = {
+      type,
+      date,
+      pdf: pdfName,
+      url: session.url || null,
+      session: session.session || null,
+      caseCount: cases.length,
+      cases,
+      ingestedAt,
+    };
+
+    const key = buildSessionKey(type, date, pdfName);
+    await env.CALENDAR_STORE.put(key, JSON.stringify(payload), {
+      expirationTtl: CALENDAR_SESSION_TTL_SECONDS,
+    });
+    written++;
+    caseTotal += cases.length;
+  }
+
+  return {
+    ok: true,
+    type,
+    date,
+    sessionsWritten: written,
+    caseTotal,
+    errors,
+    ingestedAt,
+  };
+}
+
+// KV key: calendar:session:<type>:<court-date>:<pdf-filename>
+// Lets us list by prefix "calendar:session:" to get everything, or
+// "calendar:session:felony:2026-04-21:" to scope tightly.
+function buildSessionKey(type, date, pdfName) {
+  const safePdf = String(pdfName).replace(/[^A-Za-z0-9._-]/g, '_');
+  return `calendar:session:${type}:${date}:${safePdf}`;
+}
+
+async function lookupUpcomingHillsboroughHearings(
+  env,
+  intake,
+  { daysAhead = UPCOMING_LOOKAHEAD_DAYS } = {}
+) {
+  const { firstName, lastName } = splitIntakeName(intake?.fullName || '');
+  const caseNumberNeedle = normText(intake?.caseNumber || '');
+  if (!lastName && !caseNumberNeedle) {
+    return { ok: true, searched: false, reason: 'no last name or case number provided', matches: [] };
+  }
+
+  const store = env?.CALENDAR_STORE;
+  if (!store || typeof store.list !== 'function' || typeof store.get !== 'function') {
+    return { ok: false, searched: false, reason: 'CALENDAR_STORE not bound', matches: [] };
+  }
+
+  const dates = upcomingDateWindow(daysAhead);
+  const results = [];
+  const ingestErrors = [];
+  let sessionsScanned = 0;
+
+  const intakeCtx = {
+    firstName,
+    caseNumber: caseNumberNeedle,
+    dob: normalizeDateToIso(intake?.dob || ''),
+    city: normText(intake?.city || ''),
+    zip: normalizeZip(intake?.zip || ''),
+  };
+
+  for (const type of UPCOMING_CALENDAR_TYPES) {
+    for (const date of dates) {
+      const prefix = `calendar:session:${type}:${date}:`;
+      let cursor;
+      do {
+        const listed = await store.list({ prefix, cursor, limit: 1000 });
+        const keys = Array.isArray(listed?.keys) ? listed.keys : [];
+
+        const payloads = await Promise.all(
+          keys.map(async (k) => {
+            const keyName = k?.name;
+            if (!keyName) return null;
+            const raw = await store.get(keyName);
+            if (!raw) return null;
+            try {
+              return JSON.parse(raw);
+            } catch {
+              return null;
+            }
+          })
+        );
+
+        for (const payload of payloads) {
+          if (!payload || typeof payload !== 'object') continue;
+          sessionsScanned++;
+
+          if (payload.error) {
+            ingestErrors.push({ date: payload.date || date, type: payload.type || type, pdf: payload.pdf || null, error: String(payload.error) });
+            continue;
+          }
+
+          const cases = Array.isArray(payload.cases) ? payload.cases : [];
+          for (const c of cases) {
+            const caseNumber = String(c?.caseNumber || '').trim();
+            const caseMatch = Boolean(caseNumberNeedle) && normText(caseNumber) === caseNumberNeedle;
+
+            const defendant = c?.defendant || {};
+            const defendantLast = normText(defendant.lastName || '');
+            const lastNameMatch = Boolean(lastName) && defendantLast === lastName;
+
+            if (!caseMatch && !lastNameMatch) continue;
+
+            const { city, zip } = parseCityZipFromAddress(c?.address || '');
+            const normalized = {
+              source: 'calendar',
+              calendarType: payload.type || type,
+              date: payload.date || date,
+              pdf: payload.pdf || null,
+              url: payload.url || null,
+              caseNumber,
+              defendant: {
+                firstName: String(defendant.firstName || '').trim(),
+                middleName: String(defendant.middleName || '').trim(),
+                lastName: String(defendant.lastName || '').trim(),
+              },
+              dob: normalizeDateToIso(c?.dob || ''),
+              address: String(c?.address || '').trim(),
+              city,
+              zip,
+              hearing: c?.hearing || null,
+              rawCharges: c?.rawCharges || null,
+              futureHearings: Array.isArray(c?.futureHearings) ? c.futureHearings : [],
+            };
+
+            results.push({
+              ...normalized,
+              match: scoreCalendarMatch(normalized, intakeCtx),
+            });
+          }
+        }
+
+        if (listed?.list_complete) {
+          cursor = undefined;
+        } else {
+          cursor = listed?.cursor;
+        }
+      } while (cursor);
+    }
+  }
+
+  results.sort((a, b) => {
+    if (b.match.score !== a.match.score) return b.match.score - a.match.score;
+    return compareHearingDates(a, b);
+  });
+
+  return {
+    ok: true,
+    searched: true,
+    windowDays: daysAhead,
+    sessionsScanned,
+    matchCount: results.length,
+    matches: results.slice(0, 25),
+    ingestErrors: ingestErrors.slice(0, 25),
+  };
+}
+
+function splitIntakeName(fullName) {
+  const s = String(fullName || '').trim();
+  if (!s) return { firstName: '', lastName: '' };
+  if (s.includes(',')) {
+    const [last, rest] = s.split(',').map((p) => p.trim());
+    const [first] = (rest || '').split(/\s+/);
+    return { firstName: normText(first || ''), lastName: normText(last || '') };
+  }
+  const parts = s.split(/\s+/);
+  if (parts.length === 1) return { firstName: '', lastName: normText(parts[0]) };
+  return { firstName: normText(parts[0]), lastName: normText(parts[parts.length - 1]) };
+}
+
+function normText(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function normalizeZip(zip) {
+  const m = String(zip || '').match(/\b(\d{5})(?:-\d{4})?\b/);
+  return m ? m[1] : '';
+}
+
+function normalizeDateToIso(value) {
+  const s = String(value || '').trim();
+  if (!s) return '';
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const mdy = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
+  if (!mdy) return '';
+  return `${mdy[3]}-${mdy[1].padStart(2, '0')}-${mdy[2].padStart(2, '0')}`;
+}
+
+function parseCityZipFromAddress(raw) {
+  const parts = String(raw || '')
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length < 2) return { city: '', zip: '' };
+  const city = normText(parts[parts.length - 2] || '');
+  const zip = normalizeZip(parts[parts.length - 1] || '');
+  return { city, zip };
+}
+
+function scoreCalendarMatch(record, intakeCtx) {
+  const reasons = [];
+  let score = 0;
+
+  if (intakeCtx.caseNumber && normText(record.caseNumber) === intakeCtx.caseNumber) {
+    reasons.push('case-number exact');
+    score += 100;
+  }
+  if (intakeCtx.dob && record.dob && normalizeDateToIso(record.dob) === intakeCtx.dob) {
+    reasons.push('DOB exact');
+    score += 60;
+  }
+  if (intakeCtx.firstName && normText(record.defendant?.firstName || '') === intakeCtx.firstName) {
+    reasons.push('first-name match');
+    score += 20;
+  }
+  if (intakeCtx.city && record.city && normText(record.city) === intakeCtx.city) {
+    reasons.push('city match');
+    score += 10;
+  }
+  if (intakeCtx.zip && record.zip && normalizeZip(record.zip) === intakeCtx.zip) {
+    reasons.push('zip match');
+    score += 10;
+  }
+
+  let confidence = 'low';
+  if (score >= 60) confidence = 'high';
+  else if (score >= 20) confidence = 'medium';
+
+  return { score, confidence, reasons };
+}
+
+function upcomingDateWindow(daysAhead) {
+  const count = Math.max(1, Number(daysAhead) || UPCOMING_LOOKAHEAD_DAYS);
+  const base = new Date();
+  base.setUTCHours(12, 0, 0, 0);
+  const dates = [];
+  for (let i = -1; i < count; i++) {
+    const d = new Date(base.getTime() + i * CALENDAR_MS_PER_DAY);
+    dates.push(formatIsoDate(d));
+  }
+  return dates;
+}
+
+function formatIsoDate(d) {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function compareHearingDates(a, b) {
+  const aIso = normalizeDateToIso(a?.hearing?.courtDate || '');
+  const bIso = normalizeDateToIso(b?.hearing?.courtDate || '');
+  if (aIso && bIso && aIso !== bIso) return aIso < bIso ? -1 : 1;
+  if (aIso && !bIso) return -1;
+  if (!aIso && bIso) return 1;
+  return 0;
+}
+
+// Only run the Hillsborough court-records lookup when the matter is a
+// criminal case in Florida (Hillsborough-specific feeds). Outside that
+// scope the lookup would produce irrelevant or no matches.
+function shouldRunHillsboroughLookup(answers) {
+  if (!answers) return false;
+  if (answers.matterType !== 'criminal') return false;
+  const state = (answers.jurisdictionState || '').trim().toLowerCase();
+  const county = (answers.jurisdictionCounty || '').trim().toLowerCase();
+  if (state && !['fl', 'florida'].includes(state)) return false;
+  if (county && !county.includes('hillsborough')) return false;
+  return true;
 }
 
 async function researchCase(apiKey, answers) {
@@ -1125,7 +1630,16 @@ Return a concise research brief (under 300 words). Lead with the most actionable
   }
 }
 
-function buildCalendarEventPayload({ answers, transcript, summary, firmId, conflictHit, research }) {
+function buildCalendarEventPayload({
+  answers,
+  transcript,
+  summary,
+  firmId,
+  conflictHit,
+  research,
+  courtLookup,
+  upcomingHearings,
+}) {
   const urgent = answers.urgent === 'yes';
   const matterLabel = formatMatterLabel(answers.matterType);
 
@@ -1185,6 +1699,85 @@ function buildCalendarEventPayload({ answers, transcript, summary, firmId, confl
   html.push(`Preferred times: ${esc(answers.preferredTimes || '—')}<br>`);
   html.push(`Referral: ${esc(answers.howHeard || '—')}<br>`);
   html.push(`Received: ${esc(receivedDate)}<br>`);
+
+  // Hillsborough public-records lookup
+  if (courtLookup?.ok && Array.isArray(courtLookup.matches) && courtLookup.matches.length > 0) {
+    html.push(`<br><b>🏛️ HILLSBOROUGH COURT RECORDS</b><br>`);
+    html.push(
+      `${courtLookup.matchCount} match${courtLookup.matchCount === 1 ? '' : 'es'} in the last ${courtLookup.windowDays} days — ranked by confidence<br><br>`
+    );
+    for (const m of courtLookup.matches.slice(0, 5)) {
+      const def = m.defendant || {};
+      const name = [def.firstName, def.middleName, def.lastName].filter(Boolean).join(' ');
+      const typeBadge = m.source === 'citation' ? '🚗 CITATION' : '⚖️ FILING';
+      const conf = m.match?.confidence || 'low';
+      const confBadge = conf === 'high' ? '🟢' : conf === 'medium' ? '🟡' : '⚪';
+
+      html.push(`${confBadge} <b>${esc(m.caseNumber)}</b> — ${typeBadge}<br>`);
+      const idLine = [name || '(no name)', def.dob ? `DOB ${def.dob}` : null, def.city ? def.city : null]
+        .filter(Boolean)
+        .join(' • ');
+      html.push(`${esc(idLine)}<br>`);
+      if (m.caseType) html.push(`<i>${esc(m.caseType)}</i><br>`);
+      if (Array.isArray(m.charges) && m.charges.length) {
+        const first = m.charges[0];
+        const chargeText = first.description || first.statute || '';
+        if (chargeText) html.push(`${esc(chargeText)}<br>`);
+        if (m.charges.length > 1) {
+          html.push(`<i>+${m.charges.length - 1} more charge${m.charges.length > 2 ? 's' : ''}</i><br>`);
+        }
+      }
+      if (m.attorney) {
+        const unrep = m.attorney.toLowerCase().includes('no attorney');
+        html.push(
+          `Attorney: ${unrep ? '<b>No attorney (unrepresented)</b>' : esc(m.attorney)}<br>`
+        );
+      }
+      const reasonText = m.match?.reasons?.length
+        ? m.match.reasons.join(', ')
+        : 'last-name match only';
+      html.push(
+        `<span style="color:#666">Filed ${esc(m.filingDate || '—')} • Match: ${esc(reasonText)}</span><br><br>`
+      );
+    }
+  }
+
+  // Upcoming hearings pulled from pre-parsed calendar PDFs in CALENDAR_STORE.
+  if (upcomingHearings?.ok && Array.isArray(upcomingHearings.matches) && upcomingHearings.matches.length > 0) {
+    html.push(`<br><b>🗓️ UPCOMING HEARINGS</b><br>`);
+    html.push(
+      `${upcomingHearings.matchCount} potential hearing match${upcomingHearings.matchCount === 1 ? '' : 'es'} in next ${upcomingHearings.windowDays} days<br><br>`
+    );
+    for (const h of upcomingHearings.matches.slice(0, 5)) {
+      const conf = h.match?.confidence || 'low';
+      const confBadge = conf === 'high' ? '🟢' : conf === 'medium' ? '🟡' : '⚪';
+      const hearing = h.hearing || {};
+      const def = h.defendant || {};
+      const name = [def.firstName, def.middleName, def.lastName].filter(Boolean).join(' ');
+      const docket = [hearing.courtDate, hearing.session, hearing.courtRoom].filter(Boolean).join(' • ');
+      const sourceLine = h.url
+        ? `<a href="${esc(h.url)}">${esc(h.pdf || 'calendar PDF')}</a>`
+        : esc(h.pdf || 'calendar PDF');
+
+      html.push(`${confBadge} <b>${esc(h.caseNumber)}</b> — 🏛️ ${esc((h.calendarType || 'calendar').toUpperCase())}<br>`);
+      html.push(`${esc(name || '(no name)')}${h.dob ? ` • DOB ${esc(h.dob)}` : ''}<br>`);
+      if (docket) html.push(`${esc(docket)}<br>`);
+      if (hearing.setFor) html.push(`<i>${esc(hearing.setFor)}</i><br>`);
+      if (h.rawCharges) {
+        const firstCharge = String(h.rawCharges).split(/\n+/).find((line) => line.trim());
+        if (firstCharge) html.push(`${esc(firstCharge)}<br>`);
+      }
+      if (Array.isArray(h.futureHearings) && h.futureHearings.length > 0) {
+        const f = h.futureHearings[0];
+        const nextFuture = [f.type, f.date, f.time].filter(Boolean).join(' • ');
+        if (nextFuture) html.push(`Next setting: ${esc(nextFuture)}<br>`);
+      }
+      const reasonText = h.match?.reasons?.length ? h.match.reasons.join(', ') : 'last-name match only';
+      html.push(
+        `<span style="color:#666">Source: ${sourceLine} • Match: ${esc(reasonText)}</span><br><br>`
+      );
+    }
+  }
 
   // Research section
   if (research?.text) {
@@ -1388,7 +1981,7 @@ function isInvalidRefreshTokenError(message) {
 
 // --- Case management endpoints ---
 
-async function caseChatHandler(apiKey, payload) {
+async function caseChatHandler(env, payload) {
   const { message, history = [], documents = [], caseContext = {}, industry = 'legal' } = payload || {};
 
   if (!message) throw new Error('Missing message');
@@ -1438,7 +2031,7 @@ RULES:
 
   contents.push({ role: 'user', parts: [{ text: message }] });
 
-  const text = await callGemini(apiKey, GEMINI_MODEL, {
+  const text = await callGemini(env, GEMINI_MODEL, {
     contents,
     generationConfig: { temperature: 0.4 },
   });
@@ -1446,7 +2039,7 @@ RULES:
   return { reply: text };
 }
 
-async function categorizeDocument(apiKey, payload) {
+async function categorizeDocument(env, payload) {
   const { fileName, textPreview, industry = 'legal' } = payload || {};
 
   if (!fileName) throw new Error('Missing fileName');
@@ -1465,7 +2058,7 @@ ${(textPreview || '').slice(0, 500)}
 
 Return ONLY the category key (e.g. "court" or "contracts"). No punctuation, no explanation.`;
 
-  const text = await callGemini(apiKey, GEMINI_INTAKE_MODEL, {
+  const text = await callGemini(env, GEMINI_INTAKE_MODEL, {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: { temperature: 0.1 },
   });
@@ -1476,7 +2069,7 @@ Return ONLY the category key (e.g. "court" or "contracts"). No punctuation, no e
   return { category: validCategories.includes(category) ? category : 'other' };
 }
 
-async function suggestTasks(apiKey, payload) {
+async function suggestTasks(env, payload) {
   const { caseTitle, caseDescription, existingTasks = [] } = payload || {};
 
   const prompt = `You are a helpful assistant that turns a calendar appointment into a concrete prep/follow-up task list for the person hosting the meeting.
@@ -1491,7 +2084,7 @@ Suggest 3-6 specific, actionable next steps. Each task should be short (under 8 
 
 Return ONLY a JSON array of task strings, e.g. ["Confirm meeting time", "Draft agenda", "Send prep materials"].`;
 
-  const text = await callGemini(apiKey, GEMINI_INTAKE_MODEL, {
+  const text = await callGemini(env, GEMINI_INTAKE_MODEL, {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: { temperature: 0.3, responseMimeType: 'application/json' },
   });

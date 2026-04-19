@@ -3,15 +3,19 @@ import type { FormEvent, ReactNode } from 'react';
 
 export interface IntakeAnswers {
   fullName: string;
+  dob: string;
   phone: string;
   email: string;
   bestContact: string;
   matterType: string;
   matterDetail: string;
+  caseNumber: string;
   description: string;
   opposingParty: string;
   jurisdictionState: string;
   jurisdictionCounty: string;
+  city: string;
+  zip: string;
   urgent: 'yes' | 'no' | '';
   urgencyReason: string;
   preferredTimes: string;
@@ -21,15 +25,19 @@ export interface IntakeAnswers {
 
 const EMPTY_ANSWERS: IntakeAnswers = {
   fullName: '',
+  dob: '',
   phone: '',
   email: '',
   bestContact: '',
   matterType: '',
   matterDetail: '',
+  caseNumber: '',
   description: '',
   opposingParty: '',
   jurisdictionState: '',
   jurisdictionCounty: '',
+  city: '',
+  zip: '',
   urgent: '',
   urgencyReason: '',
   preferredTimes: '',
@@ -216,6 +224,21 @@ export default function IntakeForm({ firmName = 'the firm', embed = false }: Int
                   ))}
                 </div>
               </FormField>
+
+              <FormField
+                label="Date of birth"
+                required={answers.matterType === 'criminal'}
+                error={fieldErrors.dob}
+                hint="Helps the attorney verify the right record when looking up court filings."
+              >
+                <input
+                  className="intake-form-input"
+                  type="date"
+                  autoComplete="bday"
+                  value={answers.dob}
+                  onChange={(e) => update('dob', e.target.value)}
+                />
+              </FormField>
             </section>
 
             <section className="intake-form-section">
@@ -246,6 +269,18 @@ export default function IntakeForm({ firmName = 'the firm', embed = false }: Int
                   />
                 </FormField>
               )}
+
+              <FormField
+                label="Case number (if you have one)"
+                hint="e.g. 26-CF-006353-A — skip if you don't have one."
+              >
+                <input
+                  className="intake-form-input"
+                  type="text"
+                  value={answers.caseNumber}
+                  onChange={(e) => update('caseNumber', e.target.value)}
+                />
+              </FormField>
 
               <FormField
                 label="Briefly describe your situation"
@@ -281,6 +316,28 @@ export default function IntakeForm({ firmName = 'the firm', embed = false }: Int
                     type="text"
                     value={answers.jurisdictionCounty}
                     onChange={(e) => update('jurisdictionCounty', e.target.value)}
+                  />
+                </FormField>
+              </div>
+
+              <div className="intake-form-row">
+                <FormField label="City (optional)" hint="Helps match the right court record.">
+                  <input
+                    className="intake-form-input"
+                    type="text"
+                    autoComplete="address-level2"
+                    value={answers.city}
+                    onChange={(e) => update('city', e.target.value)}
+                  />
+                </FormField>
+                <FormField label="ZIP (optional)">
+                  <input
+                    className="intake-form-input"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="postal-code"
+                    value={answers.zip}
+                    onChange={(e) => update('zip', e.target.value)}
                   />
                 </FormField>
               </div>
@@ -451,6 +508,8 @@ function validate(a: IntakeAnswers): Record<string, string> {
   else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
     errs.email = 'That email address looks invalid.';
   if (!a.matterType) errs.matterType = 'Please select the type of matter.';
+  if (a.matterType === 'criminal' && !a.dob)
+    errs.dob = 'Date of birth is required so the attorney can look up your court record.';
   if (!a.description.trim())
     errs.description = 'Briefly describe your situation so the attorney can evaluate it.';
   if (!a.jurisdictionState.trim())
