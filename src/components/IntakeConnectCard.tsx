@@ -15,7 +15,7 @@ export default function IntakeConnectCard({ firmName, compact = false }: IntakeC
   const [loading, setLoading] = useState(true);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState('');
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<'form' | 'chat' | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
   const [expanded, setExpanded] = useState(!compact);
 
@@ -36,7 +36,8 @@ export default function IntakeConnectCard({ firmName, compact = false }: IntakeC
     };
   }, []);
 
-  const intakeUrl = getIntakeUrl(firmName || 'Your Firm');
+  const formUrl = getIntakeUrl(firmName || 'Your Firm', 'form');
+  const chatUrl = getIntakeUrl(firmName || 'Your Firm', 'chat');
 
   function handleConnect() {
     try {
@@ -65,11 +66,11 @@ export default function IntakeConnectCard({ firmName, compact = false }: IntakeC
     }
   }
 
-  async function handleCopy() {
+  async function handleCopy(kind: 'form' | 'chat') {
     try {
-      await navigator.clipboard.writeText(intakeUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      await navigator.clipboard.writeText(kind === 'chat' ? chatUrl : formUrl);
+      setCopied(kind);
+      setTimeout(() => setCopied((current) => (current === kind ? null : current)), 2000);
     } catch {
       setError('Could not copy to clipboard');
     }
@@ -86,16 +87,21 @@ export default function IntakeConnectCard({ firmName, compact = false }: IntakeC
           ) : (
             <span className="intake-compact-dot intake-compact-dot-off" />
           )}
-          <span className="intake-compact-label">Client intake form</span>
+          <span className="intake-compact-label">Client intake</span>
           <span className="intake-compact-status">
             {loading ? 'checking…' : connected ? 'live' : 'not connected'}
           </span>
         </div>
         <div className="intake-compact-right">
           {!loading && connected && (
-            <button className="btn-secondary btn-xs" onClick={handleCopy}>
-              {copied ? 'Copied!' : 'Copy link'}
-            </button>
+            <>
+              <button className="btn-secondary btn-xs" onClick={() => handleCopy('form')}>
+                {copied === 'form' ? 'Copied!' : 'Copy form'}
+              </button>
+              <button className="btn-secondary btn-xs" onClick={() => handleCopy('chat')}>
+                {copied === 'chat' ? 'Copied!' : 'Copy chat'}
+              </button>
+            </>
           )}
           {!loading && !connected && (
             <button className="btn-primary btn-xs" onClick={handleConnect}>
@@ -115,9 +121,10 @@ export default function IntakeConnectCard({ firmName, compact = false }: IntakeC
     <section className="intake-connect-card">
       <div className="intake-connect-head">
         <div>
-          <h3>Client Intake Form</h3>
+          <h3>Client Intake</h3>
           <p className="subtitle">
-            A public form for new clients. Share the link, embed on your site, or open it on a tablet.
+            Two public intake links for new clients — a traditional form or a guided chat.
+            Share either, embed on your site, or open on a tablet.
           </p>
         </div>
         <div className="intake-connect-head-right">
@@ -151,13 +158,25 @@ export default function IntakeConnectCard({ firmName, compact = false }: IntakeC
       {!loading && connected && (
         <>
           <p className="intake-connect-body">
-            Your intake form is live. Share this link or drop it on your website:
+            Your intake is live. Share either link — both drop new leads onto your calendar the same way:
           </p>
-          <div className="intake-connect-url-row">
-            <code className="intake-connect-url">{intakeUrl}</code>
-            <button className="btn-secondary" onClick={handleCopy}>
-              {copied ? 'Copied!' : 'Copy'}
-            </button>
+          <div className="intake-connect-url-group">
+            <div className="intake-connect-url-label">Form (structured fields)</div>
+            <div className="intake-connect-url-row">
+              <code className="intake-connect-url">{formUrl}</code>
+              <button className="btn-secondary" onClick={() => handleCopy('form')}>
+                {copied === 'form' ? 'Copied!' : 'Copy'}
+              </button>
+            </div>
+          </div>
+          <div className="intake-connect-url-group">
+            <div className="intake-connect-url-label">Guided chat (conversational)</div>
+            <div className="intake-connect-url-row">
+              <code className="intake-connect-url">{chatUrl}</code>
+              <button className="btn-secondary" onClick={() => handleCopy('chat')}>
+                {copied === 'chat' ? 'Copied!' : 'Copy'}
+              </button>
+            </div>
           </div>
           <p className="intake-connect-hint">
             New intakes will appear on your calendar as yellow "New Lead" events
