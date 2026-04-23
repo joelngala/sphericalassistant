@@ -4,11 +4,14 @@ export async function callCopilot(apiKey, prompt, context, schema, chatHistory =
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
   
   // Build system instruction
+  const middleClause = context.middleName ? `, Middle Name: ${context.middleName}` : '';
   let systemInstruction = `You are the Spherical Assistant Copilot. Your job is to help the user by interacting with the current webpage.
-You are aware of the Active Matter: ${context.matterName} (First Name: ${context.firstName}, Last Name: ${context.lastName}).
+You are aware of the Active Matter: ${context.matterName} (First Name: ${context.firstName}${middleClause}, Last Name: ${context.lastName}).
 
-If the user asks you to fill a form, you MUST use the fill_form tool. I will provide you with the form schema. 
-Map the values you know about the active matter into the schema uids. 
+CRITICAL: When filling name fields, the SURNAME is "${context.lastName}". Never use the middle name as the surname.
+
+If the user asks you to fill a form, you MUST use the fill_form tool. I will provide you with the form schema.
+Map the values you know about the active matter into the schema uids.
 If the user asks you to scrape a page, you MUST use the scrape_page tool.
 
 Return helpful text.`;

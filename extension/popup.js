@@ -254,11 +254,17 @@ async function handleCopilotPrompt(prompt) {
     return;
   }
   
-  const parts = matterName.split('-');
-  const firstName = parts[0] || '';
-  const lastName = parts[1] || '';
-  
-  const matterContext = { matterName, firstName, lastName };
+  // Matter folder slug is "{first}-{middle...}-{last}-case-{matterCode}".
+  // Split on "-case-" first, then the first token of the name half is the
+  // given name and the LAST token is the surname (any tokens between are
+  // middle names). Earlier code took parts[1] which silently broke for any
+  // client with a middle name.
+  const nameTokens = matterName.split('-case-')[0].split('-').filter(Boolean);
+  const firstName = nameTokens[0] || '';
+  const lastName = nameTokens.length > 1 ? nameTokens[nameTokens.length - 1] : '';
+  const middleName = nameTokens.length > 2 ? nameTokens.slice(1, -1).join(' ') : '';
+
+  const matterContext = { matterName, firstName, middleName, lastName };
   
   appendChat('user', prompt);
   const loadingId = Math.random().toString();
