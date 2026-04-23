@@ -215,9 +215,12 @@ export default function AppointmentDetail({
   const orangeFlRecords = getOrangeFlRecords(event);
   const industry: IndustryType = caseData.industry || getIndustry();
 
-  const nameParts = clientName !== 'Client' ? clientName.split(' ') : [];
+  // Surname is the LAST token, not "everything after the first" — clients
+  // like "Lamont Courtney Green" should resolve to first=Lamont/last=Green
+  // so case-search portals match the actual surname.
+  const nameParts = clientName !== 'Client' ? clientName.split(/\s+/).filter(Boolean) : [];
   const extractedFirstName = nameParts[0] || '';
-  const extractedLastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : '';
+  const extractedLastName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : '';
 
   const refreshCase = useCallback(() => {
     setCaseData(loadCase(event.id));
