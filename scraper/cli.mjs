@@ -15,6 +15,10 @@ import { lookupCaseByNumber, lookupCasesByParty } from './lib/hover.mjs';
 import { fetchCitationsForDate } from './lib/hillsborough/citations.mjs';
 import { fetchCalendarsForDate } from './lib/hillsborough/calendars.mjs';
 import { fetchFilingsForDate } from './lib/hillsborough/filings.mjs';
+import {
+  lookupCaseByNumber as lookupWccaCase,
+  lookupCasesByParty as lookupWccaParty,
+} from './lib/wcca.mjs';
 
 function parseArgs(argv) {
   const args = { headless: true };
@@ -25,6 +29,8 @@ function parseArgs(argv) {
     else if (arg === '--citations') args.mode = 'citations';
     else if (arg === '--calendars') args.mode = 'calendars';
     else if (arg === '--filings') args.mode = 'filings';
+    else if (arg === '--wcca') args.wcca = true;
+    else if (arg === '--county') args.county = argv[++i];
     else if (arg === '--type') args.type = argv[++i];
     else if (arg === '--unrepresented') args.unrepresented = true;
     else if (arg === '--date') args.date = argv[++i];
@@ -38,7 +44,7 @@ function parseArgs(argv) {
     else if (arg === '--headed') args.headless = false;
     else if (arg === '--help' || arg === '-h') args.help = true;
   }
-  if (args.caseNumber && !args.mode) args.mode = 'case';
+  if (args.caseNumber && !args.mode && !args.wcca) args.mode = 'case';
   return args;
 }
 
@@ -57,6 +63,11 @@ function printHelp() {
     node cli.mjs --filings [--date YYYY-MM-DD] [--unrepresented] [--last <LAST>]
                  [--type <substring>]
 
+  Wisconsin Circuit Court Access (WCCA / CCAP):
+    node cli.mjs --wcca --case <CASE_NUMBER> --county <milwaukee|dane|waukesha|code>
+    node cli.mjs --wcca --last <LAST> [--first <FIRST>] --county <name-or-code>
+                 [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--headed]
+
 Options:
   --citations        Daily citation feed (DUIs, traffic, etc.) — 1-day lag
   --calendars        Criminal court calendars (~5 days in advance)
@@ -73,14 +84,36 @@ Options:
 
 const args = parseArgs(process.argv);
 
-if (args.help || !args.mode) {
+if (args.help || (!args.mode && !args.wcca)) {
   printHelp();
   process.exit(args.help ? 0 : 1);
 }
 
 let result;
 try {
-  if (args.mode === 'case') {
+  if (args.wcca) {
+    if (args.caseNumber) {
+      result = await lookupWccaCase(args.caseNumber, {
+        county: args.county,
+        headless: args.headless,
+      });
+    } else if (args.lastName) {
+      result = await lookupWccaParty(
+        {
+          lastName: args.lastName,
+          firstName: args.firstName,
+          middleName: args.middleName,
+          fromDate: args.fromDate,
+          toDate: args.toDate,
+          county: args.county,
+        },
+        { headless: args.headless }
+      );
+    } else {
+      console.error('--wcca requires --case <CASE_NUMBER> or --last <LAST>');
+      process.exit(1);
+    }
+  } else if (args.mode === 'case') {
     result = await lookupCaseByNumber(args.caseNumber, { headless: args.headless });
   } else if (args.mode === 'party') {
     if (!args.lastName) {

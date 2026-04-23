@@ -218,6 +218,44 @@ export interface CourtRecordsPayload {
   hearingsCount: number;
 }
 
+export interface MilwaukeeAnchor {
+  date: string;
+  address: string;
+  offense: string;
+}
+
+export interface MilwaukeeWibrMatch {
+  incidentNum: string;
+  reportedAt: string;
+  location: string;
+  zip: string;
+  district: string;
+  offenses: string[];
+  confidence: 'high' | 'medium' | 'low' | string;
+}
+
+export interface MilwaukeeCrashMatch {
+  caseNumber: string;
+  caseDate: string;
+  location: string;
+  confidence: 'high' | 'medium' | 'low' | string;
+}
+
+export interface MilwaukeeFpcContext {
+  mpdTotal: number;
+  mpdOpen: number;
+  mpdLastYear: number;
+  topCategories: Array<{ category: string; count: number }>;
+}
+
+export interface MilwaukeePayload {
+  anchor: MilwaukeeAnchor | null;
+  wibr: MilwaukeeWibrMatch[];
+  crashes: MilwaukeeCrashMatch[];
+  fpc: MilwaukeeFpcContext | null;
+  windowDays: number;
+}
+
 export interface AssistantReminderData {
   type: 'morning-brief' | 'approval' | 'followup' | 'missing-info' | 'review-request';
   eventId?: string;

@@ -1,4 +1,8 @@
 import { lookupHillsboroughRecords } from './hillsborough-lookup.js';
+import {
+  lookupMilwaukeeRecords,
+  shouldRunMilwaukeeLookup,
+} from './milwaukee-lookup.js';
 
 const GEMINI_MODEL = 'gemini-2.5-pro';
 const GEMINI_INTAKE_MODEL = 'gemini-2.5-flash';
@@ -197,6 +201,11 @@ export default {
 
       if (url.pathname === '/task-email') {
         const result = await generateTaskEmail(env, body);
+        return jsonResponse(result, 200, allowedOrigin);
+      }
+
+      if (url.pathname === '/court-lookup') {
+        const result = await handleCourtLookup(body);
         return jsonResponse(result, 200, allowedOrigin);
       }
 
@@ -1172,12 +1181,21 @@ async function submitIntake(env, payload) {
       }))
     : Promise.resolve(null);
 
-  const [conflictHit, research, courtLookup, upcomingHearings] = await Promise.all([
-    checkContactConflict(accessToken, answers.opposingParty),
-    researchCase(env.PERPLEXITY_API_KEY, answers),
-    courtLookupPromise,
-    upcomingHearingsPromise,
-  ]);
+  const milwaukeeLookupPromise = shouldRunMilwaukeeLookup(answers)
+    ? lookupMilwaukeeRecords(env, answers, { callGemini }).catch((error) => ({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      }))
+    : Promise.resolve(null);
+
+  const [conflictHit, research, courtLookup, upcomingHearings, milwaukeeLookup] =
+    await Promise.all([
+      checkContactConflict(accessToken, answers.opposingParty),
+      researchCase(env.PERPLEXITY_API_KEY, answers),
+      courtLookupPromise,
+      upcomingHearingsPromise,
+      milwaukeeLookupPromise,
+    ]);
 
   const event = buildCalendarEventPayload({
     answers,
@@ -1188,6 +1206,7 @@ async function submitIntake(env, payload) {
     research,
     courtLookup,
     upcomingHearings,
+    milwaukeeLookup,
   });
 
   const calendarResponse = await fetch(
@@ -1210,6 +1229,40 @@ async function submitIntake(env, payload) {
 
   const createdEvent = await calendarResponse.json();
 
+  // Best-effort matter folder provisioning. Drive failures (missing scope,
+  // quota, transient 5xx) must not fail the intake — surface the error so
+  // the dashboard can prompt the lawyer to reconnect if needed.
+  let matterFolder = null;
+  let matterFolderError = null;
+  try {
+    matterFolder = await ensureMatterFolderInDrive(accessToken, {
+      clientName: answers.fullName,
+      caseNumber: answers.caseNumber,
+      matterCode: answers.matterType,
+    });
+  } catch (error) {
+    matterFolderError = error instanceof Error ? error.message : String(error);
+  }
+
+  // Best-effort: push Milwaukee portal matches to the Case Database sheet.
+  // A Sheets failure must never block intake — the matches are already in
+  // the calendar event description as the primary surface.
+  let milwaukeeSheetSync = null;
+  let milwaukeeSheetError = null;
+  if (milwaukeeLookup?.ok && (milwaukeeLookup.totalMatches > 0 || milwaukeeLookup.fpcContext?.ok)) {
+    try {
+      milwaukeeSheetSync = await syncMilwaukeeLookupToSheet({
+        env,
+        accessToken,
+        eventId: createdEvent.id,
+        clientName: answers.fullName,
+        lookup: milwaukeeLookup,
+      });
+    } catch (error) {
+      milwaukeeSheetError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
   return {
     ok: true,
     eventId: createdEvent.id,
@@ -1219,8 +1272,325 @@ async function submitIntake(env, payload) {
     researchFound: Boolean(research?.text),
     courtMatches: courtLookup?.ok ? courtLookup.matchCount || 0 : 0,
     upcomingHearingMatches: upcomingHearings?.ok ? upcomingHearings.matchCount || 0 : 0,
+    milwaukeeMatches: milwaukeeLookup?.ok ? milwaukeeLookup.totalMatches || 0 : 0,
+    milwaukeeSheetSynced: Boolean(milwaukeeSheetSync?.synced),
+    milwaukeeSheetError,
+    matterFolderId: matterFolder?.id || null,
+    matterFolderUrl: matterFolder?.url || null,
+    matterFolderError,
     receivedAt: new Date().toISOString(),
   };
+}
+
+// --- Drive matter folder provisioning ---
+// Mirrors src/lib/docs.ts so folder names stay aligned between the intake
+// submission path (here) and the dashboard's on-demand folder creation.
+const DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3';
+const DRIVE_FOLDER_MIME = 'application/vnd.google-apps.folder';
+const DRIVE_ROOT_FOLDER_NAME = 'Spherical Assistant';
+
+function slugifyMatterPart(input) {
+  return (input || '')
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-');
+}
+
+function deriveMatterCaseToken(caseNumber, matterCode) {
+  const explicit = slugifyMatterPart(matterCode || '');
+  if (explicit) return explicit.slice(0, 12);
+  const raw = (caseNumber || '').toLowerCase();
+  const tokens = raw.split(/[^a-z0-9]+/).filter(Boolean);
+  const alphaTokens = tokens.filter((token) => /[a-z]/.test(token) && token.length <= 12);
+  if (alphaTokens.length > 0) {
+    return [...alphaTokens].sort((a, b) => b.length - a.length)[0];
+  }
+  return 'gen';
+}
+
+function buildMatterFolderName(clientName, caseNumber, matterCode) {
+  const clientSlug = slugifyMatterPart(clientName || '') || 'unknown-client';
+  const caseToken = deriveMatterCaseToken(caseNumber, matterCode);
+  return `${clientSlug}-case-${caseToken}`;
+}
+
+function buildLegacyMatterFolderName(clientName, caseNumber) {
+  const client = (clientName || 'Unknown Client').trim().replace(/[\\/:*?"<>|]/g, '-');
+  const caseRef = (caseNumber || '').trim().replace(/[\\/:*?"<>|]/g, '-');
+  return caseRef ? `${client} — ${caseRef}` : client;
+}
+
+function escapeDriveQuery(value) {
+  return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+async function driveFetch(accessToken, path, init) {
+  const response = await fetch(`${DRIVE_API_BASE}${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+      ...(init?.headers || {}),
+    },
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => null);
+    throw new Error(error?.error?.message || `Google Drive error: ${response.status}`);
+  }
+  return response.json();
+}
+
+async function findDriveFolderByName(accessToken, name, parentId) {
+  const parentClause = parentId ? ` and '${escapeDriveQuery(parentId)}' in parents` : '';
+  const q = `name = '${escapeDriveQuery(name)}' and mimeType = '${DRIVE_FOLDER_MIME}' and trashed = false${parentClause}`;
+  const params = new URLSearchParams({
+    q,
+    fields: 'files(id,name,webViewLink)',
+    pageSize: '1',
+  });
+  const data = await driveFetch(accessToken, `/files?${params.toString()}`);
+  const file = Array.isArray(data?.files) && data.files[0];
+  if (!file) return null;
+  return {
+    id: file.id,
+    name: file.name,
+    url: file.webViewLink || `https://drive.google.com/drive/folders/${file.id}`,
+  };
+}
+
+async function createDriveFolder(accessToken, name, parentId) {
+  const body = { name, mimeType: DRIVE_FOLDER_MIME };
+  if (parentId) body.parents = [parentId];
+  const data = await driveFetch(accessToken, '/files?fields=id,name,webViewLink', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+  return {
+    id: data.id,
+    name: data.name,
+    url: data.webViewLink || `https://drive.google.com/drive/folders/${data.id}`,
+  };
+}
+
+async function ensureDriveFolder(accessToken, name, parentId) {
+  const existing = await findDriveFolderByName(accessToken, name, parentId);
+  if (existing) return existing;
+  return createDriveFolder(accessToken, name, parentId);
+}
+
+async function ensureMatterFolderInDrive(accessToken, { clientName, caseNumber, matterCode }) {
+  const root = await ensureDriveFolder(accessToken, DRIVE_ROOT_FOLDER_NAME);
+  const canonical = buildMatterFolderName(clientName, caseNumber, matterCode);
+
+  const existingCanonical = await findDriveFolderByName(accessToken, canonical, root.id);
+  if (existingCanonical) return existingCanonical;
+
+  const legacy = buildLegacyMatterFolderName(clientName, caseNumber);
+  const existingLegacy = await findDriveFolderByName(accessToken, legacy, root.id);
+  if (existingLegacy) return existingLegacy;
+
+  return ensureDriveFolder(accessToken, canonical, root.id);
+}
+
+// --- Case Database sheet sync ---
+// The dashboard creates a "Case Database" spreadsheet in the Drive root
+// folder (see src/lib/caseSheet.ts). The worker writes to it directly so
+// portal-lookup results (Milwaukee, future jurisdictions) land in the same
+// backend-of-record the lawyer already uses. Uses the `drive.file` scope,
+// which grants Sheets access to files the app created — no extra scope.
+
+const CASE_SHEET_NAME = 'Case Database';
+const MILWAUKEE_TAB = 'Milwaukee Intel';
+const MILWAUKEE_TAB_HEADERS = [
+  'LookupRun',
+  'EventID',
+  'Client',
+  'Source',
+  'RecordID',
+  'Date',
+  'Location',
+  'ZIP',
+  'Detail',
+  'Score',
+  'Confidence',
+  'Reasons',
+];
+const CASE_SHEET_ID_KEY = 'google:case_sheet_id';
+const SHEETS_API_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
+
+async function sheetsFetch(accessToken, path, init) {
+  const response = await fetch(`${SHEETS_API_BASE}${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+      ...(init?.headers || {}),
+    },
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    throw new Error(payload?.error?.message || `Sheets API ${response.status}`);
+  }
+  return response.json();
+}
+
+async function findCaseSpreadsheet(accessToken) {
+  const root = await findDriveFolderByName(accessToken, DRIVE_ROOT_FOLDER_NAME);
+  if (!root) return null;
+  const q = `name = '${escapeDriveQuery(CASE_SHEET_NAME)}' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false and '${escapeDriveQuery(root.id)}' in parents`;
+  const params = new URLSearchParams({
+    q,
+    fields: 'files(id,name,webViewLink)',
+    pageSize: '1',
+  });
+  const data = await driveFetch(accessToken, `/files?${params.toString()}`);
+  const file = Array.isArray(data?.files) && data.files[0];
+  if (!file) return null;
+  return { id: file.id, url: file.webViewLink };
+}
+
+async function resolveCaseSpreadsheetId(env, accessToken) {
+  if (env.INTAKE_STORE) {
+    const cached = await env.INTAKE_STORE.get(CASE_SHEET_ID_KEY);
+    if (cached) {
+      try {
+        await sheetsFetch(accessToken, `/${cached}?fields=spreadsheetId`);
+        return cached;
+      } catch {
+        // Cached ID is no longer accessible (sheet deleted, permission
+        // revoked). Drop and rediscover.
+        await env.INTAKE_STORE.delete(CASE_SHEET_ID_KEY);
+      }
+    }
+  }
+  const found = await findCaseSpreadsheet(accessToken);
+  if (!found) return null;
+  if (env.INTAKE_STORE) {
+    await env.INTAKE_STORE.put(CASE_SHEET_ID_KEY, found.id);
+  }
+  return found.id;
+}
+
+async function ensureMilwaukeeTab(accessToken, spreadsheetId) {
+  const meta = await sheetsFetch(
+    accessToken,
+    `/${spreadsheetId}?fields=sheets(properties(title))`
+  );
+  const titles = new Set(
+    (meta.sheets || []).map((s) => s?.properties?.title).filter(Boolean)
+  );
+  if (!titles.has(MILWAUKEE_TAB)) {
+    await sheetsFetch(accessToken, `/${spreadsheetId}:batchUpdate`, {
+      method: 'POST',
+      body: JSON.stringify({
+        requests: [{ addSheet: { properties: { title: MILWAUKEE_TAB } } }],
+      }),
+    });
+  }
+  // Idempotent header write — overwrites row 1 each run so a hand-edited
+  // sheet repairs itself on the next intake.
+  await sheetsFetch(accessToken, `/${spreadsheetId}/values:batchUpdate`, {
+    method: 'POST',
+    body: JSON.stringify({
+      valueInputOption: 'RAW',
+      data: [{ range: `${MILWAUKEE_TAB}!A1:L1`, values: [MILWAUKEE_TAB_HEADERS] }],
+    }),
+  });
+}
+
+async function appendMilwaukeeRows(accessToken, spreadsheetId, rows) {
+  if (!rows.length) return;
+  const range = encodeURIComponent(`${MILWAUKEE_TAB}!A:A`);
+  await sheetsFetch(
+    accessToken,
+    `/${spreadsheetId}/values/${range}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ values: rows }),
+    }
+  );
+}
+
+function buildMilwaukeeSheetRows({ eventId, clientName, lookup }) {
+  const lookupRun = new Date().toISOString();
+  const rows = [];
+
+  for (const m of lookup?.wibr?.matches || []) {
+    rows.push([
+      lookupRun,
+      eventId || '',
+      clientName || '',
+      'WIBR',
+      m.incidentNum || '',
+      m.reportedAt || '',
+      m.location || '',
+      m.zip || '',
+      [m.offenses?.length ? m.offenses.join(', ') : '', m.weapon ? `weapon: ${m.weapon}` : '']
+        .filter(Boolean)
+        .join(' — '),
+      String(m.match?.score ?? ''),
+      m.match?.confidence || '',
+      (m.match?.reasons || []).join(', '),
+    ]);
+  }
+
+  for (const m of lookup?.trafficCrash?.matches || []) {
+    rows.push([
+      lookupRun,
+      eventId || '',
+      clientName || '',
+      'TrafficCrash',
+      m.caseNumber || '',
+      m.caseDate || '',
+      m.location || '',
+      '',
+      '',
+      String(m.match?.score ?? ''),
+      m.match?.confidence || '',
+      (m.match?.reasons || []).join(', '),
+    ]);
+  }
+
+  const fpc = lookup?.fpcContext;
+  if (fpc?.ok && (fpc.mpdTotal || fpc.mpdOpen)) {
+    const topCats = (fpc.topCategories || [])
+      .map((c) => `${c.category} (${c.count})`)
+      .join('; ');
+    rows.push([
+      lookupRun,
+      eventId || '',
+      clientName || '',
+      'FPCContext',
+      '',
+      '',
+      '',
+      '',
+      `MPD complaints — total ${fpc.mpdTotal}, open ${fpc.mpdOpen}, last 12mo ${fpc.mpdLastYear}. Top: ${topCats}`,
+      '',
+      '',
+      '',
+    ]);
+  }
+
+  return rows;
+}
+
+async function syncMilwaukeeLookupToSheet({ env, accessToken, eventId, clientName, lookup }) {
+  const rows = buildMilwaukeeSheetRows({ eventId, clientName, lookup });
+  if (!rows.length) return { synced: false, reason: 'no rows to write' };
+  const spreadsheetId = await resolveCaseSpreadsheetId(env, accessToken);
+  if (!spreadsheetId) {
+    return {
+      synced: false,
+      reason: 'Case Database sheet not found — open the dashboard once to create it',
+    };
+  }
+  await ensureMilwaukeeTab(accessToken, spreadsheetId);
+  await appendMilwaukeeRows(accessToken, spreadsheetId, rows);
+  return { synced: true, rowCount: rows.length, spreadsheetId };
 }
 
 // --- Hillsborough court-calendar ingest ---
@@ -1570,6 +1940,34 @@ function compareHearingDates(a, b) {
 // Only run the Hillsborough court-records lookup when the matter is a
 // criminal case in Florida (Hillsborough-specific feeds). Outside that
 // scope the lookup would produce irrelevant or no matches.
+async function handleCourtLookup(body) {
+  const jurisdiction = (body?.jurisdiction || '').toString().toLowerCase();
+  if (jurisdiction !== 'hillsborough') {
+    return {
+      ok: false,
+      error: `Live lookup is only wired for Hillsborough right now. Wisconsin uses the WCCA deep link + CLI scraper.`,
+    };
+  }
+  const caseNumber = (body?.caseNumber || '').toString().trim();
+  const lastName = (body?.lastName || '').toString().trim();
+  const firstName = (body?.firstName || '').toString().trim();
+  const fullName = [firstName, lastName].filter(Boolean).join(' ');
+  if (!caseNumber && !lastName) {
+    return { ok: false, error: 'Provide a case number or a last name.' };
+  }
+  try {
+    return await lookupHillsboroughRecords({
+      caseNumber,
+      fullName,
+      dob: body?.dob || null,
+      city: body?.city || null,
+      zip: body?.zip || null,
+    });
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : 'Court lookup failed' };
+  }
+}
+
 function shouldRunHillsboroughLookup(answers) {
   if (!answers) return false;
   if (answers.matterType !== 'criminal') return false;
@@ -1644,6 +2042,7 @@ function buildCalendarEventPayload({
   research,
   courtLookup,
   upcomingHearings,
+  milwaukeeLookup,
 }) {
   const urgent = answers.urgent === 'yes';
   const matterLabel = formatMatterLabel(answers.matterType);
@@ -1797,6 +2196,88 @@ function buildCalendarEventPayload({
     }
   }
 
+  // Milwaukee Open Data Portal — WIBR + Traffic Crash + FPC aggregate.
+  // Mirrors Hillsborough styling but uses address/date scoring since WIBR
+  // has no party names.
+  if (milwaukeeLookup?.ok) {
+    const wibrMatches = milwaukeeLookup.wibr?.matches || [];
+    const crashMatches = milwaukeeLookup.trafficCrash?.matches || [];
+    const fpc = milwaukeeLookup.fpcContext;
+    const extracted = milwaukeeLookup.extracted || {};
+    const anyMatches = wibrMatches.length + crashMatches.length > 0;
+    const hasFpc = fpc?.ok && (fpc.mpdTotal || fpc.mpdOpen);
+
+    if (anyMatches || hasFpc) {
+      html.push(`<br><b>🏛️ MILWAUKEE PORTAL</b><br>`);
+      const anchorBits = [];
+      if (extracted.incidentDate) anchorBits.push(`date ${extracted.incidentDate}`);
+      if (extracted.incidentAddress) anchorBits.push(`addr "${extracted.incidentAddress}"`);
+      if (extracted.offenseCategory) anchorBits.push(`type ${extracted.offenseCategory}`);
+      if (anchorBits.length) {
+        html.push(
+          `<span style="color:#666"><i>Anchored on ${esc(anchorBits.join(' • '))}${extracted.officerMentioned ? ` • officer mentioned: ${esc(extracted.officerMentioned)}` : ''}</i></span><br><br>`
+        );
+      }
+
+      if (wibrMatches.length > 0) {
+        html.push(
+          `<b>WIBR crime incidents</b> — ${wibrMatches.length} match${wibrMatches.length === 1 ? '' : 'es'} within ${milwaukeeLookup.windowDays} days<br>`
+        );
+        for (const m of wibrMatches.slice(0, 5)) {
+          const conf = m.match?.confidence || 'low';
+          const confBadge = conf === 'high' ? '🟢' : conf === 'medium' ? '🟡' : '⚪';
+          html.push(
+            `${confBadge} <b>${esc(m.incidentNum || '—')}</b> — ${esc(m.reportedAt || '—')}<br>`
+          );
+          html.push(`${esc(m.location || '—')}${m.zip ? ` • ZIP ${esc(m.zip)}` : ''}${m.policeDistrict ? ` • District ${esc(m.policeDistrict)}` : ''}<br>`);
+          if (m.offenses?.length) {
+            html.push(`Offenses: ${esc(m.offenses.join(', '))}${m.weapon ? ` • weapon: ${esc(m.weapon)}` : ''}<br>`);
+          }
+          const reasonText = m.match?.reasons?.length ? m.match.reasons.join(', ') : '';
+          html.push(
+            `<span style="color:#666">Match: ${esc(reasonText || '—')}</span><br><br>`
+          );
+        }
+      }
+
+      if (crashMatches.length > 0) {
+        html.push(
+          `<b>Traffic crashes</b> — ${crashMatches.length} match${crashMatches.length === 1 ? '' : 'es'}<br>`
+        );
+        for (const m of crashMatches.slice(0, 5)) {
+          const conf = m.match?.confidence || 'low';
+          const confBadge = conf === 'high' ? '🟢' : conf === 'medium' ? '🟡' : '⚪';
+          html.push(
+            `${confBadge} <b>${esc(m.caseNumber || '—')}</b> — ${esc(m.caseDate || '—')}<br>`
+          );
+          html.push(`${esc(m.location || '—')}<br>`);
+          const reasonText = m.match?.reasons?.length ? m.match.reasons.join(', ') : '';
+          html.push(
+            `<span style="color:#666">Match: ${esc(reasonText || '—')}</span><br><br>`
+          );
+        }
+      }
+
+      if (hasFpc) {
+        const topCats = (fpc.topCategories || [])
+          .map((c) => `${c.category} (${c.count})`)
+          .join(' • ');
+        html.push(
+          `<b>FPC complaint context</b> <span style="color:#666"><i>(dataset redacts officer names — department totals only)</i></span><br>`
+        );
+        html.push(
+          `MPD: ${fpc.mpdTotal} total • ${fpc.mpdOpen} open • ${fpc.mpdLastYear} in last 12 months<br>`
+        );
+        if (topCats) html.push(`Top categories: ${esc(topCats)}<br>`);
+        html.push(`<br>`);
+      }
+    } else if (extracted.incidentAddress || extracted.incidentDate) {
+      html.push(
+        `<br><b>🏛️ MILWAUKEE PORTAL</b> — no matches for ${esc(extracted.incidentAddress || extracted.incidentDate || 'the extracted incident')}<br><br>`
+      );
+    }
+  }
+
   // Research section
   if (research?.text) {
     html.push(`<br><b>🔍 RESEARCH</b><br>`);
@@ -1879,6 +2360,52 @@ function buildCalendarEventPayload({
     hearingsCount: upcomingHearings?.matchCount || 0,
   });
 
+  // Compact Milwaukee payload so the dashboard can render typed cards.
+  // Capped at 1024 chars per extendedProperty — slice aggressively on overflow.
+  const compactWibr = (milwaukeeLookup?.wibr?.matches || []).slice(0, 3).map((m) => ({
+    incidentNum: m.incidentNum || '',
+    reportedAt: String(m.reportedAt || '').slice(0, 20),
+    location: String(m.location || '').slice(0, 80),
+    zip: m.zip || '',
+    district: m.policeDistrict || '',
+    offenses: (m.offenses || []).slice(0, 3),
+    confidence: m.match?.confidence || 'low',
+  }));
+  const compactCrashes = (milwaukeeLookup?.trafficCrash?.matches || []).slice(0, 3).map((m) => ({
+    caseNumber: m.caseNumber || '',
+    caseDate: String(m.caseDate || '').slice(0, 20),
+    location: String(m.location || '').slice(0, 80),
+    confidence: m.match?.confidence || 'low',
+  }));
+  const milwaukeeBase = {
+    anchor: milwaukeeLookup?.extracted
+      ? {
+          date: milwaukeeLookup.extracted.incidentDate || '',
+          address: String(milwaukeeLookup.extracted.incidentAddress || '').slice(0, 80),
+          offense: milwaukeeLookup.extracted.offenseCategory || '',
+        }
+      : null,
+    wibr: compactWibr,
+    crashes: compactCrashes,
+    fpc: milwaukeeLookup?.fpcContext?.ok
+      ? {
+          mpdTotal: milwaukeeLookup.fpcContext.mpdTotal || 0,
+          mpdOpen: milwaukeeLookup.fpcContext.mpdOpen || 0,
+          mpdLastYear: milwaukeeLookup.fpcContext.mpdLastYear || 0,
+          topCategories: (milwaukeeLookup.fpcContext.topCategories || []).slice(0, 3),
+        }
+      : null,
+    windowDays: milwaukeeLookup?.windowDays || 0,
+  };
+  let milwaukeePayload = milwaukeeLookup?.ok ? JSON.stringify(milwaukeeBase) : '';
+  if (milwaukeePayload.length > 1024) {
+    milwaukeePayload = JSON.stringify({
+      ...milwaukeeBase,
+      wibr: compactWibr.slice(0, 1),
+      crashes: compactCrashes.slice(0, 1),
+    });
+  }
+
   return {
     summary: summaryText,
     description: html.join(''),
@@ -1903,6 +2430,7 @@ function buildCalendarEventPayload({
           recordsCount: courtLookup?.matchCount || 0,
           hearingsCount: upcomingHearings?.matchCount || 0,
         }),
+        ...(milwaukeePayload ? { sphericalMilwaukee: milwaukeePayload } : {}),
       },
     },
   };

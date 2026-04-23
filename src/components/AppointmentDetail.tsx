@@ -12,8 +12,10 @@ import type {
   ActivityLogEntry,
   BillingInterval,
 } from '../types.ts';
-import { formatEventTime, parseServiceType, getWorkflowState, getClientNameFromSummary, getLinkedDocuments, getEventDateTime, getCaseNumberFromEvent, getCourtRecords } from '../lib/calendar.ts';
+import { formatEventTime, parseServiceType, getWorkflowState, getClientNameFromSummary, getLinkedDocuments, getEventDateTime, getCaseNumberFromEvent, getCourtRecords, getMilwaukeeRecords } from '../lib/calendar.ts';
 import CourtRecordsCard from './CourtRecordsCard.tsx';
+import MilwaukeeRecordsCard from './MilwaukeeRecordsCard.tsx';
+import CourtLookupCard from './CourtLookupCard.tsx';
 import {
   ensureMatterFolder,
   uploadFileToDrive,
@@ -208,7 +210,12 @@ export default function AppointmentDetail({
   const time = formatEventTime(event);
   const eventDate = getEventDateTime(event);
   const courtRecords = getCourtRecords(event);
+  const milwaukeeRecords = getMilwaukeeRecords(event);
   const industry: IndustryType = caseData.industry || getIndustry();
+
+  const nameParts = clientName !== 'Client' ? clientName.split(' ') : [];
+  const extractedFirstName = nameParts[0] || '';
+  const extractedLastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : '';
 
   const refreshCase = useCallback(() => {
     setCaseData(loadCase(event.id));
@@ -839,6 +846,12 @@ export default function AppointmentDetail({
         {activeTab === 'details' && (
           <div className="case-tab-content">
             {courtRecords && <CourtRecordsCard payload={courtRecords} />}
+            {milwaukeeRecords && <MilwaukeeRecordsCard payload={milwaukeeRecords} />}
+            <CourtLookupCard 
+              hideHeader 
+              defaultFirstName={extractedFirstName} 
+              defaultLastName={extractedLastName} 
+            />
             <div className="detail-notes">
               <div className="detail-notes-header">
                 <label>Notes</label>

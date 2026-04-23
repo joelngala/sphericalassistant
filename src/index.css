@@ -984,6 +984,126 @@ footer {
   }
 }
 
+/* Court Lookup card (dashboard) */
+.court-lookup-panel {
+  margin-bottom: 14px;
+}
+
+.court-lookup-badge {
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.court-lookup-controls {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr 1fr auto;
+  gap: 10px;
+  align-items: end;
+  margin-top: 12px;
+}
+
+.court-lookup-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.2px;
+  text-transform: uppercase;
+}
+
+.court-lookup-field input,
+.court-lookup-field select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  color: var(--text);
+  font-size: 13px;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.court-lookup-field input:focus,
+.court-lookup-field select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.court-lookup-submit {
+  height: 38px;
+  min-width: 110px;
+}
+
+.court-lookup-error {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger, #c73030) 12%, transparent);
+  color: var(--danger, #c73030);
+  font-size: 13px;
+}
+
+.court-lookup-wcca {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-elevated) 60%, transparent);
+}
+
+.court-lookup-wcca p {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.court-lookup-wcca-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.court-lookup-code {
+  font-family: 'SFMono-Regular', Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 6px 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  white-space: nowrap;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.court-lookup-results {
+  margin-top: 14px;
+}
+
+.court-lookup-results-summary {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+@media (max-width: 760px) {
+  .court-lookup-controls {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .court-lookup-submit {
+    grid-column: 1 / -1;
+  }
+}
+
 /* Analysis */
 .analysis-section {
   display: flex;

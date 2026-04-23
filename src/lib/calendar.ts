@@ -257,6 +257,23 @@ export function getCourtRecords(event: CalendarEvent): import('../types.ts').Cou
   }
 }
 
+export function getMilwaukeeRecords(event: CalendarEvent): import('../types.ts').MilwaukeePayload | null {
+  const raw = event.extendedProperties?.private?.sphericalMilwaukee;
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as import('../types.ts').MilwaukeePayload;
+    return {
+      anchor: parsed.anchor || null,
+      wibr: Array.isArray(parsed.wibr) ? parsed.wibr : [],
+      crashes: Array.isArray(parsed.crashes) ? parsed.crashes : [],
+      fpc: parsed.fpc || null,
+      windowDays: Number.isFinite(parsed.windowDays) ? parsed.windowDays : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function buildHoverCaseLink(caseNumber: string): string {
   const n = (caseNumber || '').trim();
   if (!n) return '';

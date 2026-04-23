@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Spherical Assistant</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header>
+        <h1>Spherical Assistant</h1>
+        <p id="status" class="status">Loading…</p>
+      </header>
+
+      <section id="disconnected" hidden>
+        <p class="muted">
+          Connect your Google account to save HOVER documents into the right matter
+          folder in your Drive.
+        </p>
+        <button id="connect" class="btn btn-primary">Connect Google</button>
+      </section>
+
+      <section id="connected" hidden>
+        <p id="user" class="muted"></p>
+
+        <label class="field-label" for="matter">Active matter folder</label>
+        <select id="matter" class="field"></select>
+        <button id="refresh" class="btn btn-secondary">Refresh matters</button>
+
+        <hr />
+        
+        <!-- Gemini Copilot Section -->
+        <section class="copilot-section">
+          <div class="copilot-header">
+            <h3>Agentic Copilot</h3>
+            <button id="copilot-settings-toggle" class="btn btn-sm btn-link">⚙️</button>
+          </div>
+          
+          <div id="copilot-settings" hidden>
+            <label class="field-label" for="gemini-key">Gemini API Key</label>
+            <input type="password" id="gemini-key" class="field" placeholder="AIzaSy..." />
+            <button id="save-gemini-key" class="btn btn-sm btn-secondary">Save Key</button>
+            <hr />
+          </div>
+
+          <div class="chat-log" id="chat-log">
+            <div class="chat-message assistant">Hi! I'm your Copilot. I can fill forms or scrape pages for the active matter.</div>
+          </div>
+          
+          <div class="chat-input-row">
+            <input type="text" id="chat-input" class="field chat-input" placeholder="e.g., 'Fill out this form' or 'Scrape this page'" />
+            <button id="chat-send" class="btn btn-primary chat-send">↑</button>
+          </div>
+          
+          <div class="quick-actions">
+            <button id="quick-fill" class="btn btn-sm btn-secondary">Fill Form</button>
+            <button id="quick-scrape" class="btn btn-sm btn-secondary">Scrape Page</button>
+            <button id="scrape-wcca" class="btn btn-sm btn-secondary">WCCA Scrape</button>
+          </div>
+        </section>
+
+        <hr />
+
+        <button id="test-upload" class="btn btn-link" style="font-size: 0.8rem; padding: 0;">Send test file to Drive</button>
+        <button id="copy-recon" class="btn btn-link" style="font-size: 0.8rem; padding: 0; margin-left: 10px;">Copy HOVER recon</button>
+        <button id="disconnect" class="btn btn-link" style="font-size: 0.8rem; padding: 0; margin-left: 10px;">Disconnect Google</button>
+      </section>
+
+      <p id="message" class="message"></p>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

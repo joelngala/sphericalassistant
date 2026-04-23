@@ -1,6 +1,7 @@
 const OFFLINE_SCOPES = [
   'https://www.googleapis.com/auth/calendar.events',
   'https://www.googleapis.com/auth/contacts.readonly',
+  'https://www.googleapis.com/auth/drive.file',
 ].join(' ');
 
 const STATE_STORAGE_KEY = 'sphericalIntakeOAuthState';

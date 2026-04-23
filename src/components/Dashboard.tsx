@@ -4,6 +4,7 @@ import { groupEventsByDate, getEventDateTime } from '../lib/calendar.ts';
 import AppointmentCard from './AppointmentCard.tsx';
 import IntakeConnectCard from './IntakeConnectCard.tsx';
 import NowBar from './NowBar.tsx';
+import CourtLookupCard from './CourtLookupCard.tsx';
 
 interface DashboardProps {
   events: CalendarEvent[];
@@ -180,6 +181,8 @@ export default function Dashboard({
           <p className="panel-empty">Nothing urgent. You're clear.</p>
         )}
       </section>
+
+      <CourtLookupCard />
 
       {loading && events.length === 0 ? (
         <div className="empty-state">

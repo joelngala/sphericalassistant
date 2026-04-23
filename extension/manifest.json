@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "Spherical Assistant",
+  "version": "0.1.0",
+  "description": "Capture Hillsborough HOVER case documents into the matching matter folder in Google Drive.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Spherical Assistant"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": [
+    "identity",
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://hover.hillsclerk.com/*",
+    "https://wcca.wicourts.gov/*",
+    "https://www.googleapis.com/*",
+    "https://oauth2.googleapis.com/*",
+    "https://accounts.google.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["*://localhost/*", "*://127.0.0.1/*"],
+      "js": ["content/bridge.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://wcca.wicourts.gov/*"],
+      "js": ["content/wcca-inject.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://wcca.wicourts.gov/*"],
+      "js": ["content/wcca.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://hover.hillsclerk.com/*"],
+      "js": ["content/hover-inject.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://hover.hillsclerk.com/*"],
+      "js": ["content/hover.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
