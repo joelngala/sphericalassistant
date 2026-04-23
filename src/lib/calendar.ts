@@ -222,7 +222,11 @@ export function parseServiceType(summary: string): string {
 
 export function getClientNameFromSummary(summary: string): string {
   const parts = summary.split(/[-–—]/);
-  return parts.length > 1 ? parts.slice(1).join('-').trim() : '';
+  const raw = parts.length > 1 ? parts.slice(1).join('-').trim() : '';
+  // Worker appends the matter label as " (Criminal Defense)" etc. — strip
+  // the trailing parens so the name is just the client's name and downstream
+  // surname extraction doesn't grab "Defense)".
+  return raw.replace(/\s*\([^()]*\)\s*$/, '').trim();
 }
 
 export function getCaseNumberFromEvent(event: CalendarEvent): string {
