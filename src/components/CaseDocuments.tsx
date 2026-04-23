@@ -1,5 +1,7 @@
 import { useState, useRef } from 'react';
 import type { CaseDocument, IndustryType, DocCategory } from '../types.ts';
+import type { MatterFolderPin } from '../lib/calendar.ts';
+import type { DriveFolderRef } from '../lib/docs.ts';
 import { getCategoriesForIndustry } from '../lib/caseStore.ts';
 
 interface CaseDocumentsProps {
@@ -10,6 +12,13 @@ interface CaseDocumentsProps {
   uploading: boolean;
   driveFolderUrl?: string;
   driveFolderName?: string;
+  matterPin?: MatterFolderPin | null;
+  availableMatters?: DriveFolderRef[];
+  mattersLoading?: boolean;
+  pinBusy?: boolean;
+  onAttachMatter?: (folderId: string) => Promise<void> | void;
+  onDetachMatter?: () => Promise<void> | void;
+  onRefreshMatters?: () => Promise<void> | void;
 }
 
 export default function CaseDocuments({
@@ -20,8 +29,17 @@ export default function CaseDocuments({
   uploading,
   driveFolderUrl,
   driveFolderName,
+  matterPin,
+  availableMatters = [],
+  mattersLoading = false,
+  pinBusy = false,
+  onAttachMatter,
+  onDetachMatter,
+  onRefreshMatters,
 }: CaseDocumentsProps) {
   const [dragOver, setDragOver] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const [pickedFolderId, setPickedFolderId] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const categories = getCategoriesForIndustry(industry);
 
@@ -51,8 +69,99 @@ export default function CaseDocuments({
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
 
+  const canAttach = !!onAttachMatter;
+
+  async function handleConfirmAttach() {
+    if (!pickedFolderId || !onAttachMatter) return;
+    await onAttachMatter(pickedFolderId);
+    setPicking(false);
+    setPickedFolderId('');
+  }
+
   return (
     <div className="case-docs">
+      {canAttach && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            padding: '10px 12px',
+            border: '1px solid var(--border, #2a2a33)',
+            borderRadius: 8,
+            marginBottom: 10,
+            background: 'var(--bg-subtle, rgba(255,255,255,0.03))',
+            flexWrap: 'wrap',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+            <span style={{ fontSize: 16 }}>{matterPin ? '📎' : '📁'}</span>
+            <span style={{ fontSize: 13, color: 'var(--text-muted, #9aa)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {matterPin
+                ? <>Pinned matter: <strong style={{ color: 'var(--text, #eee)' }}>{matterPin.name || matterPin.id}</strong></>
+                : <>No matter attached. Docs go to <strong>{driveFolderName || 'default folder'}</strong> until you attach one.</>}
+            </span>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {!picking && (
+              <button
+                type="button"
+                onClick={() => {
+                  setPicking(true);
+                  setPickedFolderId(matterPin?.id || '');
+                  onRefreshMatters?.();
+                }}
+                disabled={pinBusy}
+                style={{ padding: '4px 10px', fontSize: 12, borderRadius: 6, border: '1px solid var(--border, #2a2a33)', background: 'transparent', color: 'var(--text, #eee)', cursor: 'pointer' }}
+              >
+                {matterPin ? 'Change' : 'Attach matter'}
+              </button>
+            )}
+            {matterPin && !picking && (
+              <button
+                type="button"
+                onClick={() => onDetachMatter?.()}
+                disabled={pinBusy}
+                style={{ padding: '4px 10px', fontSize: 12, borderRadius: 6, border: '1px solid var(--border, #2a2a33)', background: 'transparent', color: 'var(--text-muted, #9aa)', cursor: 'pointer' }}
+              >
+                Detach
+              </button>
+            )}
+          </div>
+          {picking && (
+            <div style={{ flexBasis: '100%', display: 'flex', gap: 8, alignItems: 'center' }}>
+              <select
+                value={pickedFolderId}
+                onChange={(e) => setPickedFolderId(e.target.value)}
+                disabled={mattersLoading || pinBusy}
+                style={{ flex: 1, padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border, #2a2a33)', background: 'var(--bg, #111)', color: 'var(--text, #eee)', fontSize: 13 }}
+              >
+                <option value="">{mattersLoading ? 'Loading matters…' : availableMatters.length ? 'Pick a matter folder…' : 'No matter folders yet'}</option>
+                {availableMatters.map((m) => (
+                  <option key={m.id} value={m.id}>{m.name}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={handleConfirmAttach}
+                disabled={!pickedFolderId || pinBusy || pickedFolderId === matterPin?.id}
+                style={{ padding: '6px 12px', fontSize: 12, borderRadius: 6, border: 'none', background: '#1a73e8', color: '#fff', cursor: 'pointer' }}
+              >
+                {pinBusy ? 'Saving…' : 'Attach'}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setPicking(false); setPickedFolderId(''); }}
+                disabled={pinBusy}
+                style={{ padding: '6px 10px', fontSize: 12, borderRadius: 6, border: '1px solid var(--border, #2a2a33)', background: 'transparent', color: 'var(--text-muted, #9aa)', cursor: 'pointer' }}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       {driveFolderUrl && (
         <a
           className="case-docs-drive-link"

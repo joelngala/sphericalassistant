@@ -33,7 +33,9 @@ import {
   getEventDateTime,
   parseServiceType,
   addLinkedDocument,
+  setMatterFolderPin,
 } from './lib/calendar.ts';
+import type { MatterFolderPin } from './lib/calendar.ts';
 import { lookupContactByEmail, createContact, listContacts, searchContacts } from './lib/contacts.ts';
 import { createDraft, sendMessage, sendScheduled } from './lib/gmail.ts';
 import {
@@ -544,6 +546,13 @@ ${emailPreferences.businessName || ''}`.trim();
     setEvents((prev) => prev.map((event) => (event.id === updated.id ? updated : event)));
   }
 
+  async function handleUpdateMatterPin(folder: MatterFolderPin | null) {
+    if (!user || !selectedEvent) return;
+    const updated = await setMatterFolderPin(user.accessToken, selectedEvent, folder);
+    setSelectedEvent(updated);
+    setEvents((prev) => prev.map((event) => (event.id === updated.id ? updated : event)));
+  }
+
   async function handleUpdateAttendeeEmail(email: string) {
     const normalizedEmail = email.trim();
     if (!normalizedEmail || !user) return;
@@ -942,6 +951,7 @@ ${emailPreferences.businessName || ''}`.trim();
             actionResults={actionResults}
             onAction={handleAction}
             onReviseAsset={handleReviseAsset}
+            onUpdateMatterPin={handleUpdateMatterPin}
             accessToken={user.accessToken}
           />
         </>

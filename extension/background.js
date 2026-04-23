@@ -27,7 +27,7 @@ async function handleListMatters() {
   return { folders };
 }
 
-async function handleCaptureDocument({ url, filename, matterId, category, caseNumber, eventDescription }) {
+async function handleCaptureDocument({ url, filename, matterId, category, caseNumber, eventDescription, source }) {
   if (!url) throw new Error('Missing url');
   if (!matterId) throw new Error('Missing matterId');
   if (!filename) throw new Error('Missing filename');
@@ -35,16 +35,19 @@ async function handleCaptureDocument({ url, filename, matterId, category, caseNu
   const accessToken = await requireToken();
 
   const res = await fetch(url, { credentials: 'include' });
-  if (!res.ok) throw new Error(`HOVER returned ${res.status} fetching the PDF`);
+  if (!res.ok) throw new Error(`Clerk portal returned ${res.status} fetching the PDF`);
   const contentType = res.headers.get('content-type') || 'application/pdf';
-  if (!/pdf/i.test(contentType)) {
-    throw new Error(`Expected a PDF, got ${contentType}. The session may have expired — reopen the document from HOVER.`);
+  if (/text\/html/i.test(contentType)) {
+    throw new Error(`Got HTML instead of a PDF (content-type: ${contentType}). The session may have expired — reopen the case page.`);
+  }
+  if (!/pdf|octet-stream|binary/i.test(contentType)) {
+    throw new Error(`Expected a PDF, got ${contentType}.`);
   }
   const blob = await res.blob();
   if (!blob.size) throw new Error('PDF response was empty');
 
   const appProperties = {
-    sphericalSource: 'hover-extension',
+    sphericalSource: source || 'hover-extension',
     sphericalCategory: category || 'Other',
     sphericalCapturedAt: new Date().toISOString(),
   };

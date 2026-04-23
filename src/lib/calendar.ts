@@ -402,6 +402,52 @@ export function getLinkedDocuments(event: CalendarEvent): LinkedDocument[] {
   }
 }
 
+export interface MatterFolderPin {
+  id: string;
+  url: string;
+  name: string;
+}
+
+export function getMatterFolderPin(event: CalendarEvent): MatterFolderPin | null {
+  const props = event.extendedProperties?.private;
+  const id = props?.sphericalMatterFolderId;
+  if (!id) return null;
+  return {
+    id,
+    url: props.sphericalMatterFolderUrl || `https://drive.google.com/drive/folders/${id}`,
+    name: props.sphericalMatterFolderName || '',
+  };
+}
+
+// Pins a Drive folder to the event via extendedProperties.private so any
+// device loading this event resolves the matter the same way — no reliance
+// on the summary string parsing to find a folder by name. Passing null
+// clears the pin; the Calendar API interprets a null-valued key as a delete.
+export async function setMatterFolderPin(
+  accessToken: string,
+  event: CalendarEvent,
+  folder: MatterFolderPin | null,
+): Promise<CalendarEvent> {
+  const nextPrivate: Record<string, string | null> = {
+    ...(event.extendedProperties?.private || {}),
+  };
+  if (folder) {
+    nextPrivate.sphericalMatterFolderId = folder.id;
+    nextPrivate.sphericalMatterFolderUrl = folder.url;
+    nextPrivate.sphericalMatterFolderName = folder.name;
+  } else {
+    nextPrivate.sphericalMatterFolderId = null;
+    nextPrivate.sphericalMatterFolderUrl = null;
+    nextPrivate.sphericalMatterFolderName = null;
+  }
+  return calendarFetch<CalendarEvent>(accessToken, `/calendars/primary/events/${event.id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      extendedProperties: { private: nextPrivate },
+    }),
+  });
+}
+
 export async function addLinkedDocument(
   accessToken: string,
   event: CalendarEvent,

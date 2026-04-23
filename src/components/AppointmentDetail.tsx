@@ -12,7 +12,8 @@ import type {
   ActivityLogEntry,
   BillingInterval,
 } from '../types.ts';
-import { formatEventTime, parseServiceType, getWorkflowState, getClientNameFromSummary, getLinkedDocuments, getEventDateTime, getCaseNumberFromEvent, getCourtRecords, getMilwaukeeRecords, getOrangeFlRecords } from '../lib/calendar.ts';
+import { formatEventTime, parseServiceType, getWorkflowState, getClientNameFromSummary, getLinkedDocuments, getEventDateTime, getCaseNumberFromEvent, getCourtRecords, getMilwaukeeRecords, getOrangeFlRecords, getMatterFolderPin } from '../lib/calendar.ts';
+import type { MatterFolderPin } from '../lib/calendar.ts';
 import CourtRecordsCard from './CourtRecordsCard.tsx';
 import MilwaukeeRecordsCard from './MilwaukeeRecordsCard.tsx';
 import OrangeFlRecordsCard from './OrangeFlRecordsCard.tsx';
@@ -22,10 +23,13 @@ import {
   uploadFileToDrive,
   buildMatterFolderName,
   findMatterFolder,
+  findFolderById,
+  listMatterFolders,
   listMatterFolderFiles,
   mapDriveFilesToCaseDocuments,
   trashDriveFile,
 } from '../lib/docs.ts';
+import type { DriveFolderRef } from '../lib/docs.ts';
 import {
   syncMatterRow,
   syncDocumentRow,
@@ -121,6 +125,7 @@ interface AppointmentDetailProps {
   actionResults: Record<string, ActionResultStatus>;
   onAction: (actionType: string) => void;
   onReviseAsset: (assetType: 'doc' | 'slides', feedback: string) => Promise<{ type: 'doc' | 'slides'; url: string; title: string }>;
+  onUpdateMatterPin: (folder: MatterFolderPin | null) => Promise<void>;
   accessToken: string;
 }
 
@@ -181,6 +186,7 @@ export default function AppointmentDetail({
   actionResults,
   onAction,
   onReviseAsset,
+  onUpdateMatterPin,
   accessToken,
 }: AppointmentDetailProps) {
   const [activeTab, setActiveTab] = useState<CaseTab>('details');
@@ -198,7 +204,12 @@ export default function AppointmentDetail({
   const [billingCreating, setBillingCreating] = useState(false);
   const [billingSyncing, setBillingSyncing] = useState(false);
   const [driveDocuments, setDriveDocuments] = useState<CaseDocument[] | null>(null);
+  const [availableMatters, setAvailableMatters] = useState<DriveFolderRef[]>([]);
+  const [mattersLoading, setMattersLoading] = useState(false);
+  const [pinBusy, setPinBusy] = useState(false);
   const liveBilling = isStripeLiveMode();
+
+  const matterPin = useMemo(() => getMatterFolderPin(event), [event]);
 
   const workflow = getWorkflowState(event);
   const serviceType = parseServiceType(event.summary);
@@ -239,7 +250,15 @@ export default function AppointmentDetail({
   const loadDriveDocuments = useCallback(async () => {
     if (!accessToken) return;
     try {
-      const folder = await findMatterFolder(accessToken, clientName, caseNumber, matterFolderCode);
+      // Pinned folder wins: any device loading this event resolves to the
+      // same Drive folder regardless of how the event summary is shaped.
+      let folder: DriveFolderRef | null = null;
+      if (matterPin?.id) {
+        folder = await findFolderById(accessToken, matterPin.id);
+      }
+      if (!folder) {
+        folder = await findMatterFolder(accessToken, clientName, caseNumber, matterFolderCode);
+      }
       if (!folder) {
         setDriveDocuments([]);
         return;
@@ -252,12 +271,57 @@ export default function AppointmentDetail({
       console.warn('Failed to load matter docs from Drive', err);
       setDriveDocuments(null);
     }
-  }, [accessToken, caseNumber, clientName, event.id, matterFolderCode, refreshCase]);
+  }, [accessToken, caseNumber, clientName, event.id, matterFolderCode, matterPin?.id, refreshCase]);
+
+  const loadAvailableMatters = useCallback(async () => {
+    if (!accessToken) return;
+    setMattersLoading(true);
+    try {
+      const folders = await listMatterFolders(accessToken);
+      setAvailableMatters(folders);
+    } catch (err) {
+      console.warn('Failed to list matter folders', err);
+    } finally {
+      setMattersLoading(false);
+    }
+  }, [accessToken]);
+
+  const handleAttachMatter = useCallback(async (folderId: string) => {
+    const folder = availableMatters.find((f) => f.id === folderId);
+    if (!folder) return;
+    setPinBusy(true);
+    try {
+      await onUpdateMatterPin({ id: folder.id, url: folder.url, name: folder.name });
+      setDriveDocuments(null);
+      await loadDriveDocuments();
+    } catch (err) {
+      console.error('Failed to attach matter', err);
+    } finally {
+      setPinBusy(false);
+    }
+  }, [availableMatters, onUpdateMatterPin, loadDriveDocuments]);
+
+  const handleDetachMatter = useCallback(async () => {
+    setPinBusy(true);
+    try {
+      await onUpdateMatterPin(null);
+      setDriveDocuments(null);
+      await loadDriveDocuments();
+    } catch (err) {
+      console.error('Failed to detach matter', err);
+    } finally {
+      setPinBusy(false);
+    }
+  }, [onUpdateMatterPin, loadDriveDocuments]);
 
   useEffect(() => {
     setDriveDocuments(null);
     void loadDriveDocuments();
   }, [loadDriveDocuments, event.id]);
+
+  useEffect(() => {
+    void loadAvailableMatters();
+  }, [loadAvailableMatters]);
 
   const visibleDocuments = useMemo(() => {
     if (driveDocuments === null) return caseData.documents;
@@ -393,6 +457,13 @@ export default function AppointmentDetail({
       try {
         const folder = await ensureMatterFolder(accessToken, clientName, caseNumber, matterFolderCode);
         setDriveFolder(event.id, folder.id, folder.url);
+        if (!matterPin) {
+          // First time we resolve a folder for this event — pin it so
+          // phone/other devices find the same docs without name matching.
+          onUpdateMatterPin({ id: folder.id, url: folder.url, name: folder.name }).catch((err) => {
+            console.warn('Failed to auto-pin matter folder', err);
+          });
+        }
         const uploaded = await uploadFileToDrive(accessToken, file, folder.id, {
           category,
           uploadedAt: new Date().toISOString(),
@@ -1074,8 +1145,15 @@ export default function AppointmentDetail({
               onUpload={handleUploadDocument}
               onRemove={handleRemoveDocument}
               uploading={uploading}
-              driveFolderUrl={caseData.driveFolderUrl}
-              driveFolderName={buildMatterFolderName(clientName, caseNumber, matterFolderCode)}
+              driveFolderUrl={matterPin?.url || caseData.driveFolderUrl}
+              driveFolderName={matterPin?.name || buildMatterFolderName(clientName, caseNumber, matterFolderCode)}
+              matterPin={matterPin}
+              availableMatters={availableMatters}
+              mattersLoading={mattersLoading}
+              pinBusy={pinBusy}
+              onAttachMatter={handleAttachMatter}
+              onDetachMatter={handleDetachMatter}
+              onRefreshMatters={loadAvailableMatters}
             />
           </div>
         )}

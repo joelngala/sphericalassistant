@@ -1257,6 +1257,37 @@ async function submitIntake(env, payload) {
     matterFolderError = error instanceof Error ? error.message : String(error);
   }
 
+  // Pin the folder to the calendar event so the dashboard (web + mobile)
+  // resolves to it by ID, not by re-deriving the folder name from the
+  // summary — avoids the empty Docs tab when a lead's name hasn't yet been
+  // normalized onto the event title. Best-effort; Calendar PATCH failures
+  // fall back to name-based lookup on the dashboard side.
+  if (matterFolder && createdEvent?.id) {
+    try {
+      await fetch(
+        `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(createdEvent.id)}`,
+        {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            extendedProperties: {
+              private: {
+                sphericalMatterFolderId: matterFolder.id,
+                sphericalMatterFolderUrl: matterFolder.url || '',
+                sphericalMatterFolderName: matterFolder.name || '',
+              },
+            },
+          }),
+        },
+      );
+    } catch (error) {
+      console.warn('Failed to pin matter folder to intake event', error);
+    }
+  }
+
   // Best-effort: push Milwaukee portal matches to the Case Database sheet.
   // A Sheets failure must never block intake — the matches are already in
   // the calendar event description as the primary surface.

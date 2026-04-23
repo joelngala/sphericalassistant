@@ -549,6 +549,46 @@ export async function findMatterFolder(
   return findFolderByName(accessToken, legacy, root.id);
 }
 
+export async function findFolderById(
+  accessToken: string,
+  folderId: string,
+): Promise<DriveFolderRef | null> {
+  try {
+    const data = await driveFetch(
+      accessToken,
+      `/files/${encodeURIComponent(folderId)}?fields=id,name,mimeType,webViewLink,trashed`,
+    );
+    if (!data?.id || data.mimeType !== FOLDER_MIME || data.trashed) return null;
+    return {
+      id: data.id,
+      name: data.name,
+      url: data.webViewLink || `https://drive.google.com/drive/folders/${data.id}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function listMatterFolders(accessToken: string): Promise<DriveFolderRef[]> {
+  const root = await ensureRootFolder(accessToken);
+  const params = new URLSearchParams({
+    q: `'${escapeDriveQuery(root.id)}' in parents and mimeType = '${FOLDER_MIME}' and trashed = false`,
+    fields: 'files(id,name,webViewLink)',
+    pageSize: '200',
+    orderBy: 'name',
+  });
+  const data = (await driveFetch(accessToken, `/files?${params.toString()}`)) as {
+    files?: Array<{ id?: string; name?: string; webViewLink?: string }>;
+  };
+  return (data.files || [])
+    .filter((f): f is { id: string; name: string; webViewLink?: string } => !!f.id && !!f.name)
+    .map((f) => ({
+      id: f.id,
+      name: f.name,
+      url: f.webViewLink || `https://drive.google.com/drive/folders/${f.id}`,
+    }));
+}
+
 function toDocCategory(value: string | undefined): DocCategory | undefined {
   if (!value) return undefined;
   const v = value.trim().toLowerCase();
