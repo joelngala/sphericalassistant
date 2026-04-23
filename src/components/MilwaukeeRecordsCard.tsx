@@ -58,7 +58,7 @@ function CrashRow({ m }: { m: MilwaukeeCrashMatch }) {
 }
 
 export default function MilwaukeeRecordsCard({ payload }: MilwaukeeRecordsCardProps) {
-  const { anchor, wibr, crashes, fpc, windowDays } = payload;
+  const { anchor, wibr, crashes, fpc } = payload;
   const hasRows = wibr.length > 0 || crashes.length > 0;
   const hasFpc = Boolean(fpc && (fpc.mpdTotal || fpc.mpdOpen));
   if (!hasRows && !hasFpc && !anchor) return null;
@@ -82,12 +82,12 @@ export default function MilwaukeeRecordsCard({ payload }: MilwaukeeRecordsCardPr
         </div>
         <div className="court-card-stats">
           {wibr.length > 0 && (
-            <span className="court-stat" title={`Crime incidents within ${windowDays} days`}>
+            <span className="court-stat" title="Crime incidents">
               {wibr.length} WIBR
             </span>
           )}
           {crashes.length > 0 && (
-            <span className="court-stat" title={`Traffic crashes within ${windowDays} days`}>
+            <span className="court-stat" title="Traffic crashes">
               {crashes.length} crash{crashes.length === 1 ? '' : 'es'}
             </span>
           )}

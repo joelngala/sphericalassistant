@@ -16,7 +16,6 @@ const RESOURCE_FPC_COMPLAINTS = '83052a7c-aeb0-4f8e-9289-4e18972e0df8';
 
 const GEOCODE_BASE = 'https://maps.googleapis.com/maps/api/geocode/json';
 
-const DEFAULT_WINDOW_DAYS = 14;
 const MS_PER_DAY = 86400000;
 
 // WIBR "offense" columns — per-incident flags set to "1" when that offense
@@ -81,6 +80,7 @@ async function extractIncidentFromDescription(env, answers, callGemini) {
 
   const matterHint = answers?.matterType ? ` Matter type: ${answers.matterType}.` : '';
   const prompt = `You extract structured facts from a client-intake description for a Milwaukee, WI law firm.${matterHint}
+Assume the current year is ${new Date().getFullYear()} if no year is explicitly specified in the description.
 
 Return ONLY JSON matching this schema — use null for anything not clearly stated:
 {
@@ -144,6 +144,7 @@ async function fetchWibrRows(zip) {
   const params = new URLSearchParams({
     resource_id: RESOURCE_WIBR_CURRENT,
     limit: '1000',
+    sort: 'ReportedDateTime desc',
   });
   // ZIP is an indexed text column — filtering server-side keeps us under the
   // default 100-row page. Without ZIP we fall back to a broader pull capped
@@ -209,16 +210,14 @@ function scoreWibrMatch(row, ctx) {
   return { score, confidence, reasons };
 }
 
-async function lookupWibr(ctx, windowDays) {
+async function lookupWibr(ctx) {
   try {
     const rows = await fetchWibrRows(ctx.zip);
     const scored = [];
     for (const row of rows) {
-      // If we have an anchor date, discard rows outside the window before
-      // scoring — keeps the result list focused.
-      if (ctx.incidentDate) {
+      if (ctx.incidentDate && row.ReportedDateTime) {
         const rowDate = parseLooseDate(row.ReportedDateTime);
-        if (rowDate && daysBetween(rowDate, ctx.incidentDate) > windowDays) continue;
+        if (rowDate && daysBetween(rowDate, ctx.incidentDate) > 14) continue;
       }
       const match = scoreWibrMatch(row, ctx);
       if (match.score <= 0) continue;
@@ -250,7 +249,7 @@ async function lookupWibr(ctx, windowDays) {
 
 // --- Traffic Crash ----------------------------------------------------------
 
-async function lookupTrafficCrash(ctx, windowDays) {
+async function lookupTrafficCrash(ctx) {
   // Only try when the extraction gave us a hook — a raw "pull everything"
   // here would be noisy, since the dataset has no ZIP column to pre-filter on.
   if (!ctx.incidentDate && !ctx.incidentAddress) {
@@ -260,6 +259,7 @@ async function lookupTrafficCrash(ctx, windowDays) {
     const params = new URLSearchParams({
       resource_id: RESOURCE_TRAFFIC_CRASH,
       limit: '1000',
+      sort: 'CASEDATE desc',
     });
     const res = await fetch(`${CKAN_SEARCH}?${params.toString()}`);
     if (!res.ok) return { ok: false, error: `Traffic Crash CKAN ${res.status}` };
@@ -269,9 +269,9 @@ async function lookupTrafficCrash(ctx, windowDays) {
     const matches = [];
     for (const row of rows) {
       const rowDate = parseLooseDate(row.CASEDATE);
-      if (ctx.incidentDate && rowDate && daysBetween(rowDate, ctx.incidentDate) > windowDays) {
-        continue;
-      }
+
+      // If we have an anchor date, discard rows outside the 14-day window
+      if (ctx.incidentDate && rowDate && daysBetween(rowDate, ctx.incidentDate) > 14) continue;
 
       let score = 0;
       const reasons = [];
@@ -374,9 +374,7 @@ export function shouldRunMilwaukeeLookup(answers) {
   return false;
 }
 
-export async function lookupMilwaukeeRecords(env, answers, { callGemini, windowDays } = {}) {
-  const window = windowDays || DEFAULT_WINDOW_DAYS;
-
+export async function lookupMilwaukeeRecords(env, answers, { callGemini } = {}) {
   const extracted = await extractIncidentFromDescription(env, answers, callGemini);
   const coords = extracted?.incidentAddress
     ? await geocodeAddress(env, extracted.incidentAddress)
@@ -392,8 +390,8 @@ export async function lookupMilwaukeeRecords(env, answers, { callGemini, windowD
   };
 
   const [wibr, trafficCrash, fpcContext] = await Promise.all([
-    lookupWibr(ctx, window),
-    lookupTrafficCrash(ctx, window),
+    lookupWibr(ctx),
+    lookupTrafficCrash(ctx),
     lookupFpcAggregate(),
   ]);
 
@@ -403,7 +401,6 @@ export async function lookupMilwaukeeRecords(env, answers, { callGemini, windowD
   return {
     ok: true,
     searched: true,
-    windowDays: window,
     extracted: ctx,
     totalMatches,
     wibr,
