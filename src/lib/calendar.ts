@@ -274,6 +274,23 @@ export function getMilwaukeeRecords(event: CalendarEvent): import('../types.ts')
   }
 }
 
+export function getOrangeFlRecords(event: CalendarEvent): import('../types.ts').OrangeFlPayload | null {
+  const raw = event.extendedProperties?.private?.sphericalOrangeFl;
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as import('../types.ts').OrangeFlPayload;
+    return {
+      reportDate: parsed.reportDate || '',
+      totalReported: Number.isFinite(parsed.totalReported) ? parsed.totalReported : 0,
+      bookings: Array.isArray(parsed.bookings) ? parsed.bookings : [],
+      parcelAddress: parsed.parcelAddress || '',
+      parcels: Array.isArray(parsed.parcels) ? parsed.parcels : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function buildHoverCaseLink(caseNumber: string): string {
   const n = (caseNumber || '').trim();
   if (!n) return '';

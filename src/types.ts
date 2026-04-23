@@ -253,7 +253,48 @@ export interface MilwaukeePayload {
   wibr: MilwaukeeWibrMatch[];
   crashes: MilwaukeeCrashMatch[];
   fpc: MilwaukeeFpcContext | null;
-  windowDays: number;
+  windowDays?: number;
+}
+
+export interface OrangeFlBookingTopCharge {
+  level: string;
+  degree: string;
+  statute: string;
+  description: string;
+}
+
+export interface OrangeFlBookingTopCase {
+  caseNumber: string;
+  agency: string;
+  topCharge: OrangeFlBookingTopCharge | null;
+  chargeCount: number;
+}
+
+export interface OrangeFlBookingMatch {
+  name: string;
+  bookingNumber: string;
+  cell: string;
+  age: number | null;
+  releaseAt: string;
+  address: { city: string; zip: string };
+  topCase: OrangeFlBookingTopCase | null;
+  confidence: 'high' | 'medium' | 'low' | string;
+}
+
+export interface OrangeFlParcelHit {
+  address: string;
+  parcelId: string;
+  zip: string;
+  jurisdiction: string;
+  useCode: string;
+}
+
+export interface OrangeFlPayload {
+  reportDate: string;
+  totalReported: number;
+  bookings: OrangeFlBookingMatch[];
+  parcelAddress: string;
+  parcels: OrangeFlParcelHit[];
 }
 
 export interface AssistantReminderData {

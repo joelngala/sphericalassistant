@@ -20,6 +20,7 @@
   "host_permissions": [
     "https://hover.hillsclerk.com/*",
     "https://wcca.wicourts.gov/*",
+    "https://myeclerk.myorangeclerk.com/*",
     "https://www.googleapis.com/*",
     "https://oauth2.googleapis.com/*",
     "https://accounts.google.com/*"
@@ -50,6 +51,17 @@
     {
       "matches": ["https://hover.hillsclerk.com/*"],
       "js": ["content/hover.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://myeclerk.myorangeclerk.com/*"],
+      "js": ["content/myorangeclerk-inject.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://myeclerk.myorangeclerk.com/*"],
+      "js": ["content/myorangeclerk.js"],
       "run_at": "document_idle"
     }
   ]

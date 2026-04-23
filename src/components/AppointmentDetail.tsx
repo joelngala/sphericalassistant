@@ -12,9 +12,10 @@ import type {
   ActivityLogEntry,
   BillingInterval,
 } from '../types.ts';
-import { formatEventTime, parseServiceType, getWorkflowState, getClientNameFromSummary, getLinkedDocuments, getEventDateTime, getCaseNumberFromEvent, getCourtRecords, getMilwaukeeRecords } from '../lib/calendar.ts';
+import { formatEventTime, parseServiceType, getWorkflowState, getClientNameFromSummary, getLinkedDocuments, getEventDateTime, getCaseNumberFromEvent, getCourtRecords, getMilwaukeeRecords, getOrangeFlRecords } from '../lib/calendar.ts';
 import CourtRecordsCard from './CourtRecordsCard.tsx';
 import MilwaukeeRecordsCard from './MilwaukeeRecordsCard.tsx';
+import OrangeFlRecordsCard from './OrangeFlRecordsCard.tsx';
 import CourtLookupCard from './CourtLookupCard.tsx';
 import {
   ensureMatterFolder,
@@ -211,6 +212,7 @@ export default function AppointmentDetail({
   const eventDate = getEventDateTime(event);
   const courtRecords = getCourtRecords(event);
   const milwaukeeRecords = getMilwaukeeRecords(event);
+  const orangeFlRecords = getOrangeFlRecords(event);
   const industry: IndustryType = caseData.industry || getIndustry();
 
   const nameParts = clientName !== 'Client' ? clientName.split(' ') : [];
@@ -847,6 +849,13 @@ export default function AppointmentDetail({
           <div className="case-tab-content">
             {courtRecords && <CourtRecordsCard payload={courtRecords} />}
             {milwaukeeRecords && <MilwaukeeRecordsCard payload={milwaukeeRecords} />}
+            {orangeFlRecords && (
+              <OrangeFlRecordsCard
+                payload={orangeFlRecords}
+                defendantFirstName={extractedFirstName}
+                defendantLastName={extractedLastName}
+              />
+            )}
             <CourtLookupCard 
               hideHeader 
               defaultFirstName={extractedFirstName} 

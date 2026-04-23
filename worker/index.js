@@ -3,6 +3,10 @@ import {
   lookupMilwaukeeRecords,
   shouldRunMilwaukeeLookup,
 } from './milwaukee-lookup.js';
+import {
+  lookupOrangeFlRecords,
+  shouldRunOrangeFlLookup,
+} from './orange-fl-lookup.js';
 
 const GEMINI_MODEL = 'gemini-2.5-pro';
 const GEMINI_INTAKE_MODEL = 'gemini-2.5-flash';
@@ -1188,13 +1192,21 @@ async function submitIntake(env, payload) {
       }))
     : Promise.resolve(null);
 
-  const [conflictHit, research, courtLookup, upcomingHearings, milwaukeeLookup] =
+  const orangeFlLookupPromise = shouldRunOrangeFlLookup(answers)
+    ? lookupOrangeFlRecords(env, answers, { callGemini }).catch((error) => ({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      }))
+    : Promise.resolve(null);
+
+  const [conflictHit, research, courtLookup, upcomingHearings, milwaukeeLookup, orangeFlLookup] =
     await Promise.all([
       checkContactConflict(accessToken, answers.opposingParty),
       researchCase(env.PERPLEXITY_API_KEY, answers),
       courtLookupPromise,
       upcomingHearingsPromise,
       milwaukeeLookupPromise,
+      orangeFlLookupPromise,
     ]);
 
   const event = buildCalendarEventPayload({
@@ -1207,6 +1219,7 @@ async function submitIntake(env, payload) {
     courtLookup,
     upcomingHearings,
     milwaukeeLookup,
+    orangeFlLookup,
   });
 
   const calendarResponse = await fetch(
@@ -1275,6 +1288,8 @@ async function submitIntake(env, payload) {
     milwaukeeMatches: milwaukeeLookup?.ok ? milwaukeeLookup.totalMatches || 0 : 0,
     milwaukeeSheetSynced: Boolean(milwaukeeSheetSync?.synced),
     milwaukeeSheetError,
+    orangeFlBookingMatches: orangeFlLookup?.ok ? orangeFlLookup.bookings?.matchCount || 0 : 0,
+    orangeFlParcelHits: orangeFlLookup?.ok ? orangeFlLookup.parcel?.parcels?.length || 0 : 0,
     matterFolderId: matterFolder?.id || null,
     matterFolderUrl: matterFolder?.url || null,
     matterFolderError,
@@ -2043,6 +2058,7 @@ function buildCalendarEventPayload({
   courtLookup,
   upcomingHearings,
   milwaukeeLookup,
+  orangeFlLookup,
 }) {
   const urgent = answers.urgent === 'yes';
   const matterLabel = formatMatterLabel(answers.matterType);
@@ -2221,7 +2237,7 @@ function buildCalendarEventPayload({
 
       if (wibrMatches.length > 0) {
         html.push(
-          `<b>WIBR crime incidents</b> — ${wibrMatches.length} match${wibrMatches.length === 1 ? '' : 'es'} within ${milwaukeeLookup.windowDays} days<br>`
+          `<b>WIBR crime incidents</b> — ${wibrMatches.length} match${wibrMatches.length === 1 ? '' : 'es'}<br>`
         );
         for (const m of wibrMatches.slice(0, 5)) {
           const conf = m.match?.confidence || 'low';
@@ -2274,6 +2290,70 @@ function buildCalendarEventPayload({
     } else if (extracted.incidentAddress || extracted.incidentDate) {
       html.push(
         `<br><b>🏛️ MILWAUKEE PORTAL</b> — no matches for ${esc(extracted.incidentAddress || extracted.incidentDate || 'the extracted incident')}<br><br>`
+      );
+    }
+  }
+
+  // Orange County FL — OCSO daily booking PDF + OCGIS parcel lookup. The
+  // worker does both server-side; the extension handles the case-search
+  // deep dive (myorangeclerk.com) since that portal requires a CAPTCHA.
+  if (orangeFlLookup?.ok) {
+    const bookings = orangeFlLookup.bookings;
+    const parcel = orangeFlLookup.parcel;
+    const bookingMatches = bookings?.matches || [];
+    const parcelHits = parcel?.parcels || [];
+    const anyHits = bookingMatches.length > 0 || parcelHits.length > 0;
+
+    if (anyHits) {
+      html.push(`<br><b>🍊 ORANGE COUNTY FL</b><br>`);
+      if (bookings?.reportDate) {
+        html.push(
+          `<span style="color:#666"><i>Booking report ${esc(bookings.reportDate)} • ${bookings.totalReported || 0} entries scanned</i></span><br><br>`
+        );
+      }
+
+      if (bookingMatches.length > 0) {
+        html.push(
+          `<b>OCSO bookings</b> — ${bookingMatches.length} match${bookingMatches.length === 1 ? '' : 'es'} in last 24h<br>`
+        );
+        for (const m of bookingMatches.slice(0, 5)) {
+          const conf = m.match?.confidence || 'low';
+          const confBadge = conf === 'high' ? '🟢' : conf === 'medium' ? '🟡' : '⚪';
+          const status = m.releaseAt ? `released ${m.releaseAt}` : `in custody (cell ${m.cell || '—'})`;
+          html.push(
+            `${confBadge} <b>${esc(m.name)}</b> — booking #${esc(m.bookingNumber)} • ${esc(status)}<br>`
+          );
+          const topCase = m.cases?.[0];
+          if (topCase) {
+            const caseLabel = topCase.caseNumber || '(no case#)';
+            html.push(`Case ${esc(caseLabel)} — ${esc(topCase.agency || '—')}<br>`);
+            for (const ch of (topCase.charges || []).slice(0, 3)) {
+              html.push(`• ${esc(ch.level)} / ${esc(ch.degree)} — ${esc(ch.description || ch.statute)}<br>`);
+            }
+          }
+          const reasonText = m.match?.reasons?.length ? m.match.reasons.join(', ') : '';
+          html.push(
+            `<span style="color:#666">Match: ${esc(reasonText || '—')}</span><br><br>`
+          );
+        }
+      }
+
+      if (parcelHits.length > 0) {
+        html.push(
+          `<b>OCGIS parcels</b> — ${parcelHits.length} hit${parcelHits.length === 1 ? '' : 's'} for ${esc(parcel.address || parcel.basename || 'incident address')}<br>`
+        );
+        for (const p of parcelHits.slice(0, 5)) {
+          html.push(
+            `📍 <b>${esc(p.address)}</b> • ${esc(p.jurisdiction || '—')} ${esc(p.zip || '')}<br>`
+          );
+          html.push(
+            `<span style="color:#666">Parcel ${esc(p.parcelId || '—')} • use: ${esc(p.useCode || '—')}</span><br><br>`
+          );
+        }
+      }
+    } else if (parcel?.address) {
+      html.push(
+        `<br><b>🍊 ORANGE COUNTY FL</b> — no booking match, no parcel found for ${esc(parcel.address)}<br><br>`
       );
     }
   }
@@ -2395,7 +2475,6 @@ function buildCalendarEventPayload({
           topCategories: (milwaukeeLookup.fpcContext.topCategories || []).slice(0, 3),
         }
       : null,
-    windowDays: milwaukeeLookup?.windowDays || 0,
   };
   let milwaukeePayload = milwaukeeLookup?.ok ? JSON.stringify(milwaukeeBase) : '';
   if (milwaukeePayload.length > 1024) {
@@ -2403,6 +2482,58 @@ function buildCalendarEventPayload({
       ...milwaukeeBase,
       wibr: compactWibr.slice(0, 1),
       crashes: compactCrashes.slice(0, 1),
+    });
+  }
+
+  // Compact Orange County FL payload — top 3 booking matches + top 3 parcels.
+  // Same 1024-char extendedProperty cap; trim aggressively on overflow.
+  const compactOrangeBookings = (orangeFlLookup?.bookings?.matches || []).slice(0, 3).map((m) => ({
+    name: m.name || '',
+    bookingNumber: m.bookingNumber || '',
+    cell: m.cell || '',
+    age: m.age || null,
+    releaseAt: m.releaseAt || '',
+    address: {
+      city: m.address?.city || '',
+      zip: m.address?.zip || '',
+    },
+    topCase: m.cases?.[0]
+      ? {
+          caseNumber: m.cases[0].caseNumber || '',
+          agency: String(m.cases[0].agency || '').slice(0, 60),
+          topCharge: m.cases[0].charges?.[0]
+            ? {
+                level: m.cases[0].charges[0].level || '',
+                degree: m.cases[0].charges[0].degree || '',
+                statute: m.cases[0].charges[0].statute || '',
+                description: String(m.cases[0].charges[0].description || '').slice(0, 100),
+              }
+            : null,
+          chargeCount: m.cases[0].charges?.length || 0,
+        }
+      : null,
+    confidence: m.match?.confidence || 'low',
+  }));
+  const compactOrangeParcels = (orangeFlLookup?.parcel?.parcels || []).slice(0, 3).map((p) => ({
+    address: String(p.address || '').slice(0, 80),
+    parcelId: p.parcelId || '',
+    zip: p.zip || '',
+    jurisdiction: p.jurisdiction || '',
+    useCode: String(p.useCode || '').slice(0, 40),
+  }));
+  const orangeFlBase = {
+    reportDate: orangeFlLookup?.bookings?.reportDate || '',
+    totalReported: orangeFlLookup?.bookings?.totalReported || 0,
+    bookings: compactOrangeBookings,
+    parcelAddress: String(orangeFlLookup?.parcel?.address || '').slice(0, 80),
+    parcels: compactOrangeParcels,
+  };
+  let orangeFlPayload = orangeFlLookup?.ok ? JSON.stringify(orangeFlBase) : '';
+  if (orangeFlPayload.length > 1024) {
+    orangeFlPayload = JSON.stringify({
+      ...orangeFlBase,
+      bookings: compactOrangeBookings.slice(0, 1),
+      parcels: compactOrangeParcels.slice(0, 1),
     });
   }
 
@@ -2431,6 +2562,7 @@ function buildCalendarEventPayload({
           hearingsCount: upcomingHearings?.matchCount || 0,
         }),
         ...(milwaukeePayload ? { sphericalMilwaukee: milwaukeePayload } : {}),
+        ...(orangeFlPayload ? { sphericalOrangeFl: orangeFlPayload } : {}),
       },
     },
   };
